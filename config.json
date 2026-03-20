@@ -1,0 +1,49 @@
+{
+  "active_model": "qwen-2.5-7b",
+  "models": {
+    "phi-4-mini": {
+      "display_name": "Phi-4 Mini (NPU Core)",
+      "engine": "openvino",
+      "target_device": "AUTO:NPU,GPU",
+      "hf_model_id": "microsoft/Phi-4-mini-instruct",
+      "path": "./model/phi-4-mini-instruct-int4-ov",
+      "temperature": 0.5,
+      "max_tokens": 1024
+    },
+    "qwen-3.5-9b": {
+      "display_name": "Qwen 3.5 9B (iGPU Core)",
+      "engine": "llama.cpp",
+      "target_device": "GPU.0",
+      "hf_model_id": "bartowski/Qwen3.5-9B-Instruct-GGUF",
+      "hf_gguf_file": "Qwen3.5-9B-Instruct-Q4_K_M.gguf",
+      "path": "./model/Qwen3.5-9B-Instruct-Q4_K_M.gguf",
+      "temperature": 0.3,
+      "max_tokens": 2048
+    },
+    "qwen-2.5-7b": {
+      "display_name": "Qwen 2.5 7B (iGPU Core)",
+      "engine": "openvino",
+      "target_device": "GPU.0",
+      "hf_model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "path": "./model/qwen2.5-7b-instruct-int4-ov",
+      "temperature": 0.3,
+      "max_tokens": 4096
+    },
+    "llama-3.1-8b": {
+      "display_name": "Llama 3.1 8B (iGPU Core)",
+      "engine": "llama.cpp",
+      "target_device": "GPU.0",
+      "hf_model_id": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "hf_gguf_file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "path": "./model/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "temperature": 0.3,
+      "max_tokens": 1024
+    }
+  },
+  "device_priority": [
+    "NPU",
+    "GPU",
+    "CPU"
+  ],
+  "diagnostics_interval_sec": 30
+}

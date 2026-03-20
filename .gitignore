@@ -1,0 +1,17 @@
+# AI Models
+model/
+*.bin
+*.safetensors
+*.gguf
+
+# Python & Environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+
+# Local Databases & Logs
+chroma_db/
+schedule_history.json
+test_schedule.json

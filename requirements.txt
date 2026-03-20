@@ -1,0 +1,37 @@
+# ==========================================
+# ALLIANCE TERMINAL — DEPENDENCY MANIFEST
+# ==========================================
+
+# --- Core UI & Subsystems ---
+pywebview>=5.0
+psutil>=5.9.0
+chromadb>=0.5.0
+huggingface_hub
+
+# --- ENGINE 1: NPU (OpenVINO Core) ---
+# STRICT LOCK: These exact versions prevent the "Architecture Gap" 
+# and CLI compilation crashes when downloading new models.
+transformers==4.53.3
+optimum-intel[openvino,nncf]==1.27.0
+openvino==2025.4.1
+openvino-genai==2025.4.1
+openvino-tokenizers==2025.4.1
+huggingface-hub    
+timm              
+tiktoken           
+accelerate
+
+        #"transformers==4.53.3",
+        #"openvino==2025.4.1",             # ADDED: Locks the core engine
+        #"openvino-genai==2025.4.1",       # ADDED: Stops the 120GB RAM leak
+        #"openvino-tokenizers==2025.4.1",  # ADDED: Syncs the pipeline
+        #"optimum-intel[openvino,nncf]==1.27.0", 
+        #"huggingface-hub",      
+        #"timm",                 
+        #"tiktoken",             
+        #"accelerate"
+
+# --- ENGINE 2: iGPU (Vulkan Core) ---
+# This flag tells pip to pull pre-compiled Vulkan binaries automatically
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan
+llama-cpp-python
