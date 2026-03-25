@@ -23,27 +23,26 @@ PROMPTS_PATH = SCRIPT_DIR / "prompts.yaml"
 class AIBackend:
     """Manages the OpenVINO GenAI LLM pipeline with config-driven model loading."""
 
-    # JSON Schema for Extraction-First AI
+    # JSON Schema for Extraction-First AI (Aligned with Logic Layer Pydantic models)
     EXTRACTION_SCHEMA = {
         "type": "object",
         "properties": {
-            "response": { "type": "string", "description": "The conversational text for the user." },
+            "response": { "type": "string", "description": "Conversational reply as Normandy (Formal Butler)." },
             "entities": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "label": { "type": "string", "description": "Simplified or user-provided task name." },
-                        "original_name": { "type": "string", "description": "Original name mentioned in prompt." },
-                        "action": { "type": "string", "enum": ["create", "modify", "delete", "query"] },
-                        "start_time": { "type": "string", "description": "HH:MM format if mentioned." },
-                        "end_time": { "type": "string", "description": "HH:MM format if mentioned." },
-                        "duration": { "type": "integer", "description": "Duration in minutes." },
-                        "deadline": { "type": "string", "description": "Target deadline if mentioned." },
-                        "priority": { "type": "integer", "description": "Priority score 1-10." },
-                        "notes": { "type": "string", "description": "Any extra context." }
+                        "action": { "type": "string", "enum": ["create", "modify", "delete"] },
+                        "intent_type": { "type": "string", "enum": ["fixed_event", "floating_task", "status_update"] },
+                        "event_name": { "type": "string", "description": "Simplified, professional task name." },
+                        "start_time_reference": { "type": "string", "description": "Time string if mentioned (e.g. '09:00', '14:30' or 'now')." },
+                        "end_time_reference": { "type": "string", "description": "Time string if mentioned (e.g. '12:00')." },
+                        "duration_minutes": { "type": "integer", "description": "Total duration in minutes." },
+                        "deadline": { "type": "string", "description": "ISO format deadline if mentioned." },
+                        "priority": { "type": "integer", "description": "Priority score 1-10." }
                     },
-                    "required": ["label", "action"]
+                    "required": ["intent_type", "event_name"]
                 }
             },
             "facts": {
@@ -51,7 +50,7 @@ class AIBackend:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "fact": { "type": "string" },
+                        "fact": { "type": "string", "description": "Extracted user preference or info." },
                         "category": { "type": "string" }
                     },
                     "required": ["fact"]
@@ -266,10 +265,11 @@ class AIBackend:
             facts = data.get("facts", [])
             entities = data.get("entities", [])
             
-            # Map entities to schedule_updates for the UI
+            # Map entities to schedule_updates for the UI / Logic Layer
             schedule_updates = []
             for ent in entities:
-                ent["type"] = "schedule" # Bridge for existing mood_engine logic
+                ent["type"] = "schedule" # Bridge
+                # Rename/Map fields if mood_engine bridge expects specific keys
                 schedule_updates.append(ent)
                 
             # Clean up response text for HTML

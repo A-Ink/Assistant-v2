@@ -369,6 +369,11 @@ html, body {
     padding: 8px;
 }
 
+.panel-body-static {
+    padding: 8px;
+    overflow: hidden;
+}
+
 .panel-divider {
     height: 1px;
     background: linear-gradient(90deg, transparent, rgba(0, 180, 255, 0.2), transparent);
@@ -753,7 +758,9 @@ html, body {
 .schedule-time {
     font-family: var(--font-header);
     font-size: 10px;
-    color: var(--text-dim);
+    font-weight: bold;
+    color: var(--cyan-bright);
+    letter-spacing: 1px;
 }
 
 .schedule-task {
