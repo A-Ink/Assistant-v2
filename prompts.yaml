@@ -27,14 +27,31 @@ default: |
   - "tonight" -> 21:00
   - "night" -> 22:00
   
+  [24H CONVERSION (OFFLOADED TO BACKEND)]
+  - DO NOT ATTEMPT MENTAL MATH. If the user says "8:30pm", pass the string "8:30pm" exactly to 'start_time_reference'.
+  - RELATIVE SHIFTS: If user wants to shift/move an event (e.g., "1 hr later", "30 mins earlier"), use ONLY the relative offset in 'start_time_reference' like "+1h", "-1h", "+30m", or "-15m" with action: 'modify'. DO NOT combine it with the absolute time (avoid "19:30 +1h"). The backend handles the math.
+  - The backend handles all dot-notation (8.30) and AM/PM strings.
+  
   [EXTRACTION RULES]
   - event_name: The ACTIVITY (e.g., "Snack", "Gym"), NOT the time. Use title case.
   - date_reference: "today" or "tomorrow" ONLY. Do NOT put HH:MM here.
-  - start_time_reference: HH:MM format (24h) or keywords: "midnight", "noon", "morning", "afternoon", "evening", "tonight", "now". Do NOT put "today" or "tomorrow" here.
-  - duration_minutes: Estimate if missing (e.g., Snack=15, Lunch=45, Sleep=420).
-  - priority: Follow the hierarchy. Use P9 for School, P8 for Sleep.
-  - ACTION: All requests to "schedule", "add", "change", or "remove" events MUST result in entries in the 'entities' array.
-  - DELTA ONLY: Only output the specific items being added, modified, or deleted. Do NOT return the entire existing schedule provided in the context unless you are explicitly modifying every item.
+  - start_time_reference: HH:MM (24h), keywords ("midnight", "noon"), or OFFSETS ("+1h", "-30m"). 
+  - duration_minutes: Estimate if missing.
+  - action: 'create', 'delete', or 'modify'.
+  
+  [SHIFT LOGIC — CRITICAL]
+  - When a user says "Shift X by 1hr" or "Move Y 30 mins later":
+    - GOOD: { "action": "modify", "event_name": "X", "start_time_reference": "+1h" }
+    - BAD: { "action": "modify", "event_name": "X", "start_time_reference": "19:30" } (Repeating the same time does NOT shift it!)
+  - NEVER attempt to calculate the new time yourself. Use the `+` or `-` offset.
+  
+  [BIOMETRIC EXTRACTION]
+  - 'status_update': Use for health/energy reports. 
+  - If user says "I'm tired", "I have a food coma", or "I'm drained" -> intent_type: 'status_update', event_name: 'Fatigue'.
+  - If user says "I'm alert" or "I feel great" -> intent_type: 'status_update', event_name: 'High Energy'.
+
+  [DRAIN CATEGORIZATION]
+  - The engine drains energy for 'Thinking' (Study, Code, Exam) and 'Social' (Meeting, Class, Socializing) tasks. Ensure these keywords are present in event_name where applicable.
 
   [RELIABILITY & CROSS-CHECK]
   - SEPARATE DATE/TIME: Keep 'date_reference' (Today/Tomorrow) separate from 'start_time_reference' (HH:MM).

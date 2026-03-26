@@ -348,7 +348,10 @@ async function sendMessage() {
                 }
 
                 if (result.facts_saved) await refreshDossier();
-                if (result.schedule_updated) await refreshSchedule();
+                if (result.schedule_updated) {
+                    await refreshSchedule();
+                    await refreshMood(); // <--- ADD THIS
+                }
             } else if (result && result.error) {
                 appendMessage('SYSTEM:', result.error, 'error');
             }
@@ -440,12 +443,21 @@ async function refreshSchedule() {
     } catch (e) { /* ignore */ }
 }
 
+async function refreshMood() {
+    if (!window.pywebview || !window.pywebview.api) return;
+    try {
+        const mood = await window.pywebview.api.get_mood();
+        if (mood) moodContent.innerHTML = mood;
+    } catch (e) { /* ignore */ }
+}
+
 // =====================================================
 // EXTERNAL CALLS (from Python via evaluate_js)
 // =====================================================
 
 window.refreshDossier = refreshDossier;
 window.refreshSchedule = refreshSchedule;
+window.refreshMood = refreshMood;
 
 window.appendSystemMessage = function(text) {
     appendMessage('SYSTEM:', text, 'system');

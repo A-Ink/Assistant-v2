@@ -1,6 +1,6 @@
 # Alliance Terminal v2
 
-A privacy-focused, locally hosted AI assistant tailored as a proactive, biologically aware scheduling coach. Styled around the *Mass Effect* universe, it optimizes your calendar natively on edge hardware using the professional, formal persona of an English Butler.
+A privacy-focused, locally hosted AI assistant tailored as a proactive, biologically aware scheduling coach. Styled around the *Mass Effect* universe, it optimizes your calendar natively on edge hardware (NPU/GPU) using the professional, formal persona of an English Butler.
 
 ---
 
@@ -12,7 +12,7 @@ A privacy-focused, locally hosted AI assistant tailored as a proactive, biologic
    ./setup.ps1
    ```
 2. **Requisition AI Cores**
-   Download and optimize the models for your hardware:
+   Download and optimize the models (Qwen 2.5 7B) for your hardware:
    ```powershell
    python download_model.py
    ```
@@ -24,27 +24,26 @@ A privacy-focused, locally hosted AI assistant tailored as a proactive, biologic
 
 ---
 
-## 🧠 System Architecture
+## 🧠 Core Systems & Logic
 
-The architecture is optimized for **Intel Core Ultra** (Meteor Lake/Lunar Lake) silicon, maximizing performance while remaining battery-conscious.
+The Terminal is powered by the **MoodEngine**, a custom biometric synthesis layer that enforces human-centric constraints.
 
-### 1. NPU-First Pipeline (OpenVINO GenAI)
-The primary engine uses **OpenVINO GenAI 2025.x** to route 7B/8B parameter models strictly to the **NPU**. This minimizes CPU/GPU overhead and enables sub-10s cold starts via graph caching.
+### 1. Biometric Energy Bar (0-100%)
+The UI displays a real-time energy score calculated from four primary variables:
+- **Sleep Debt**: Penalties (-5% per hour) for falling below 7h of sleep.
+- **Cognitive/Social Drain**: High-intensity tasks (Study/Meetings) drain energy at -10% per hour.
+- **Food Coma**: Automatic 90-minute lethargy penalty (-25%) following Lunch or Dinner.
+- **Recovery Boosts**: Rewards for maintenance. Completing **Snacks** (+15%) or **Powernaps** (+30%) restores energy.
 
-### 2. Hybrid Entity Extraction
-We use `StructuredOutputConfig` to enforce a strict JSON schema. The AI identifies intent and extracts raw temporal data, while the **Python Mood Engine** handles the scheduling logic, conflict resolution, and priority math.
+### 2. Temporal Logic Engine
+- **Waterfall Parser**: Supports natural language ("8.30pm"), keywords ("noon"), and absolute times ("20:30").
+- **Relative Shifts**: Supports hybrid arithmetic like `+1h` or `19:30 + 1h`. Shifting events calculates new times on the backend to prevent AI math hallucinations.
+- **Deterministic Action Sorter**: Ensures `delete` and `modify` operations occur before `create` to prevent schedule collisions during re-scheduling.
 
-### 3. Vulkan GGUF Fallback
-For devices without an NPU, the terminal supports the **Vulkan Engine** via `llama-cpp-python`, providing high-speed inference on Intel Arc and integrated GPUs.
-
----
-
-## 🛠️ Performance & Features
-
-- **Cold Start Optimization**: NPU/Vulkan graphs are compiled once and stored in `model_cache/`. Subsequent boots take <10s.
-- **RAG Memory**: Persistent vector memory (ChromaDB) stores the "Commander Dossier" for personalized context.
-- **Telemetry**: Real-time monitoring of System RAM and App-specific memory usage.
-- **Mass Effect Persona**: Immersive feedback and lore-integrated scheduling recommendations.
+### 3. NPU-First Pipeline (OpenVINO GenAI)
+- **OpenVINO 2026.0**: Optimized for Intel Core Ultra (NPU).
+- **Graph Caching**: Pre-compiled hardware graphs enable sub-5s cold starts.
+- **Dossier Memory**: ChromaDB RAG storage for persistent Commander context.
 
 ---
 
@@ -53,4 +52,4 @@ For devices without an NPU, the terminal supports the **Vulkan Engine** via `lla
 - **OS**: Windows 11
 - **Python**: 3.12 (Managed via `setup.ps1`)
 - **Hardware**: Intel Core Ultra (NPU) or Intel Arc/iGPU (Vulkan)
-- **AI Core**: OpenVINO 2026.0.x
+- **Key Dependencies**: `pywebview`, `openvino-genai`, `chromadb`, `pydantic`.

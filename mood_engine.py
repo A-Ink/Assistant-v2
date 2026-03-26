@@ -42,6 +42,7 @@ class MoodEngine:
         self.state_file = Path(SCRIPT_DIR / state_file)
         self.schedule_db: Dict[str, List[Dict[str, Any]]] = {}
         self.overflow_queue: List[Dict[str, Any]] = []
+        self.user_energy: int = 100  # Volatile base, boosted/cut by logic
         self._load_state()
 
     def _load_state(self):
@@ -49,7 +50,14 @@ class MoodEngine:
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
-                    self.schedule_db = json.load(f)
+                    data = json.load(f)
+                    # Support both legacy and new formats
+                    if isinstance(data, dict) and "schedules" in data:
+                        self.schedule_db = data["schedules"]
+                        self.user_energy = data.get("user_energy", 100)
+                    else:
+                        self.schedule_db = data
+                        self.user_energy = 100
             except (json.JSONDecodeError, IOError):
                 self.schedule_db = {}
         else:
@@ -57,8 +65,93 @@ class MoodEngine:
 
     def _save_state(self):
         """Saves current state to disk."""
+        data = {
+            "schedules": self.schedule_db,
+            "user_energy": self.user_energy
+        }
         with open(self.state_file, 'w') as f:
-            json.dump(self.schedule_db, f, indent=2)
+            json.dump(data, f, indent=2)
+
+    def _calculate_current_energy(self) -> Dict[str, Any]:
+        """
+        Synthesizes the energy score (0-100) based on biological and cognitive factors.
+        """
+        now = datetime.now()
+        today_str = now.date().isoformat()
+        
+        score = self.user_energy # Start with user-reported or baseline
+        penalties = []
+        
+        # 1. Sleep Debt Penalty (-5 per hour of debt)
+        debt_mins = self._calculate_sleep_debt(today_str)
+        if debt_mins > 0:
+            debt_penalty = int((debt_mins / 60) * 5)
+            score -= debt_penalty
+            penalties.append(f"Sleep Debt: -{debt_penalty}")
+
+        # 2. Selective Cognitive/Social Drain
+        # Thinking: study, exam, code, math, logic, analysis, project, writing, research
+        # Social: meeting, social, party, call, lecture, seminar, class, interview, group
+        thinking_k = ["study", "exam", "code", "math", "logic", "analysis", "project", "writing", "research"]
+        social_k = ["meeting", "social", "party", "call", "lecture", "seminar", "class", "interview", "group"]
+        
+        day_tasks = self.schedule_db.get(today_str, [])
+        drain = 0
+        for t in day_tasks:
+            if "start_time" not in t: continue
+            h, m = map(int, t['start_time'].split(':'))
+            st = h * 60 + m
+            # Only count completed or ongoing tasks today
+            if st < now.hour * 60 + now.minute:
+                activity = t['activity'].lower()
+                is_taxing = any(k in activity for k in thinking_k + social_k)
+                if is_taxing and t.get('priority', 5) >= 8:
+                    # Drain at -10 per hour
+                    task_drain = int((t['duration'] / 60) * 10)
+                    drain += task_drain
+        
+        if drain > 0:
+            score -= drain
+            penalties.append(f"Cognitive/Social Drain: -{drain}")
+
+        # 3. Post-Meal Dip (Food Coma)
+        # -25 energy for 90 minutes after "Lunch" or "Dinner"
+        for t in day_tasks:
+            if t.get('type') == "meal" and ("lunch" in t['activity'].lower() or "dinner" in t['activity'].lower()):
+                h, m = map(int, t['start_time'].split(':'))
+                meal_end = h * 60 + m + t['duration']
+                now_m = now.hour * 60 + now.minute
+                if meal_end <= now_m < meal_end + 90:
+                    score -= 25
+                    penalties.append("Post-Meal Lethargy: -25")
+                    break
+
+        # 4. Recovery Boosts (Completed Tasks)
+        # Powernap: +30, Snack: +15
+        for t in day_tasks:
+            if "start_time" not in t: continue
+            h, m = map(int, t['start_time'].split(':'))
+            st = h * 60 + m
+            # Only count completed tasks
+            if st + t['duration'] <= now.hour * 60 + now.minute:
+                act = t['activity'].lower()
+                if "powernap" in act:
+                    score += 30
+                    penalties.append("Powernap Recovery: +30")
+                elif "snack" in act:
+                    score += 15
+                    penalties.append("Snack Boost: +15")
+
+        score = max(0, min(100, score))
+        
+        # Status Label
+        if score > 80: status = "EXCELLENT"
+        elif score > 60: status = "NOMINAL"
+        elif score > 40: status = "DEGRADED"
+        elif score > 20: status = "CRITICAL"
+        else: status = "EXHAUSTED"
+        
+        return {"score": score, "status": status, "penalties": penalties}
 
     def _init_day(self, target_date: str):
         """Ensures a date entry exists and runs daily biological checks."""
@@ -138,8 +231,13 @@ class MoodEngine:
         return "\n".join(context)
 
     def process_parsed_input(self, data: ParsedInput):
-        """Route Pydantic intents to specific execution logic."""
-        for intent in data.intents:
+        """Route Pydantic intents to specific execution logic, prioritizing deletions."""
+        # ACTION PRIORITY: delete (0), modify (1), create (2)
+        # This ensures we clean the old state before adding new slots for "shifts"
+        priority_map = {"delete": 0, "modify": 1, "create": 2}
+        sorted_intents = sorted(data.intents, key=lambda x: priority_map.get(x.action, 2))
+        
+        for intent in sorted_intents:
             self._execute_intent(intent)
         self._save_state()
 
@@ -182,12 +280,45 @@ class MoodEngine:
             log.error(f"Error in execute_schedule_command bridge: {e}")
             return False
 
-    def _parse_time_reference(self, ref: str) -> Optional[str]:
-        """Parses keywords like 'midnight', 'noon', 'morning' into standard HH:MM."""
+    def _parse_time_reference(self, ref: str, base_time: Optional[str] = None) -> Optional[str]:
+        """Parses keywords, absolute times, and relative or hybrid offsets (19:30 +1h)."""
         if not ref: return None
-        ref = ref.lower().strip()
+        ref = ref.lower().strip().replace('.', ':')
         
-        # Strict Keyword Mapping
+        # 1. Handle Hybrid/Relative Offsets
+        if '+' in ref or '-' in ref:
+            try:
+                # Find the first operator to split on
+                op_idx = ref.find('+') if '+' in ref else ref.find('-')
+                if op_idx == 0: # Pure relative (+1h)
+                    sign = 1 if ref.startswith('+') else -1
+                    val_str = ref[1:].strip()
+                    bh, bm = (map(int, base_time.split(':')) if base_time else (datetime.now().hour, datetime.now().minute))
+                else: # Hybrid (19:30 +1h)
+                    base_candidate = ref[:op_idx].strip()
+                    delta_candidate = ref[op_idx:].strip()
+                    # Resolve base part first
+                    resolved_base = self._parse_time_reference(base_candidate, base_time=base_time)
+                    if not resolved_base: return None
+                    return self._parse_time_reference(delta_candidate, base_time=resolved_base)
+
+                # Parse delta (e.g., 1h, 30m, 90)
+                delta_mins = 0
+                if 'h' in val_str:
+                    delta_mins = int(float(val_str.replace('h', '')) * 60)
+                elif 'm' in val_str:
+                    delta_mins = int(val_str.replace('m', ''))
+                else:
+                    delta_mins = int(val_str)
+                
+                total_mins = bh * 60 + bm + (sign * delta_mins)
+                total_mins %= (24 * 60)
+                return f"{total_mins // 60:02d}:{total_mins % 60:02d}"
+            except Exception as e:
+                log.warning(f"Failed to parse relative/hybrid offset '{ref}': {e}")
+                return None
+
+        # 2. Strict Keyword Mapping
         mapping = {
             "midnight": "00:00",
             "noon": "12:00",
@@ -199,13 +330,31 @@ class MoodEngine:
             "night": "22:00",
             "now": datetime.now().strftime("%H:%M")
         }
-        
         if ref in mapping:
             return mapping[ref]
         
-        # Exact HH:MM check
-        if ":" in ref:
-             return ref
+        # 2. Waterfall Parser (AM/PM and 24h)
+        formats = [
+            "%H:%M",       # 20:30
+            "%I:%M%p",      # 8:30pm
+            "%I:%M %p",     # 8:30 pm
+            "%I%p",         # 8pm
+            "%I %p",        # 8 pm
+            "%H",           # 20
+        ]
+        
+        # Clean string for strptime: remove dots/spaces if needed, but waterfall handles most
+        clean_ref = ref.replace(' ', '').replace('am', 'AM').replace('pm', 'PM')
+        # Some formats need the space back if it was like '8 pm'
+        # We'll just try both compressed and original
+        for r in [clean_ref, ref.upper()]:
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(r, fmt)
+                    return dt.strftime("%H:%M")
+                except ValueError:
+                    continue
+                    
         return None
 
     def _execute_intent(self, intent: UserIntent) -> bool:
@@ -213,20 +362,7 @@ class MoodEngine:
         now = datetime.now()
         target_date = date.today().isoformat()
         
-        # 1. Parse time reference and handle field-mixing (Auto-Correction)
-        if intent.start_time_reference:
-            s_ref = intent.start_time_reference.lower().strip()
-            # If AI put a date keyword in the time field, move it
-            if s_ref in ["today", "tomorrow"] and not intent.date_reference:
-                intent.date_reference = s_ref
-                intent.start_time_reference = None
-                log.info(f"Auto-corrected date keyword '{s_ref}' from time field.")
-            else:
-                parsed = self._parse_time_reference(intent.start_time_reference)
-                if parsed:
-                    intent.start_time_reference = parsed
-
-        # 2. DATE INFERENCE (Explicit vs Duration-Aware Guessing)
+        # 1. DATE INFERENCE (Explicit vs Duration-Aware Guessing)
         if intent.date_reference:
             ref = intent.date_reference.lower()
             if "tomorrow" in ref:
@@ -235,13 +371,55 @@ class MoodEngine:
                 target_date = date.today().isoformat()
             else:
                 try:
-                    # Support for "2026-03-27" etc.
                     target_date = date.fromisoformat(ref).isoformat()
                 except ValueError:
-                    pass # Fall back to today
+                    pass
         
-        # Duration-aware fallback if no explicit date given
-        elif intent.start_time_reference and ":" in intent.start_time_reference:
+        self._init_day(target_date)
+
+        # 2. CONTROLLED DELETIONS/MODIFICATIONS (Context-Aware Base Time)
+        base_time_for_delta = None
+        if intent.action in ["delete", "modify"]:
+            found = False
+            search_dates = [target_date] if intent.date_reference else [date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()]
+            
+            for d_str in search_dates:
+                tasks = self.schedule_db.get(d_str, [])
+                new_tasks = []
+                for t in tasks:
+                    if intent.event_name.lower() in t['activity'].lower() or t['activity'].lower() in intent.event_name.lower():
+                        if not found:
+                            base_time_for_delta = t.get('start_time')
+                            found = True
+                        continue # Target found, effectively deleting it
+                    new_tasks.append(t)
+                
+                if len(new_tasks) < len(tasks):
+                    self.schedule_db[d_str] = new_tasks
+                    log.info(f"Removed '{intent.event_name}' from {d_str} for processing.")
+            
+            if found and intent.action == "delete":
+                return True
+            
+        # 3. TIME PARSING (Relative-Aware)
+        if intent.start_time_reference:
+            s_ref = intent.start_time_reference.lower().strip()
+            # If AI put a date keyword in the time field, move it
+            if s_ref in ["today", "tomorrow"] and not intent.date_reference:
+                intent.date_reference = s_ref
+                # Re-run date inference if needed? 
+                # (Simple: just update target_date if it was tomorrow)
+                if s_ref == "tomorrow": target_date = (date.today() + timedelta(days=1)).isoformat()
+                intent.start_time_reference = None
+                log.info(f"Auto-corrected date keyword '{s_ref}' from time field.")
+            else:
+                # Use base_time_for_delta if it's a modify action and we found a task
+                parsed = self._parse_time_reference(intent.start_time_reference, base_time=base_time_for_delta)
+                if parsed:
+                    intent.start_time_reference = parsed
+
+        # Duration-aware date fallback (if no explicit date given)
+        if not intent.date_reference and intent.start_time_reference and ":" in intent.start_time_reference:
             try:
                 h, m = map(int, intent.start_time_reference.split(':'))
                 duration = intent.duration_minutes or 60
@@ -315,9 +493,23 @@ class MoodEngine:
                 intent.deadline or ""
             )
         elif intent.intent_type == "status_update":
-            if "sleep" in intent.event_name.lower():
-                # Sleep is P8: Can be pushed by School (P9) but beats low-pri tasks
-                # For late night sleep requests, it's often for the 'next' day if after 00:00
+            name = intent.event_name.lower()
+            current_data = self._calculate_current_energy()
+            # Calculate current total PENALTY (Sleep debt + Drain + Coma - Recovery)
+            # This is (Base - CurrentScore)
+            current_penalty = self.user_energy - current_data['score']
+            
+            if any(k in name for k in ["tired", "exhausted", "fatigue", "drained", "coma"]):
+                # Target: 30% Final. Base must be 30 + current_penalty
+                self.user_energy = 30 + current_penalty
+                log.info(f"Commander reported fatigue. Base adjusted to {self.user_energy} to reach 30% target.")
+                return True
+            if any(k in name for k in ["energized", "alert", "great", "ready"]):
+                # Target: 100% Final. Base must be 100 + current_penalty
+                self.user_energy = 100 + current_penalty
+                log.info(f"Commander reported high energy. Base adjusted to {self.user_energy} to reach 100% target.")
+                return True
+            if "sleep" in name:
                 return self._force_slot(target_date, "00:00", intent.duration_minutes or 420, "Sleep", 8, "sleep")
         return False
 
@@ -361,17 +553,49 @@ class MoodEngine:
         return {"label": "NOMINAL", "description": "Systems stable.", "color": "#00ccff"}
 
     def get_mood_html(self) -> str:
-        """Returns HTML-formatted mood status for UI injection."""
-        mood = self.get_mood()
-        time_str = datetime.now().strftime("%H:%M")
+        """Returns HTML-formatted mood and energy status for UI injection."""
+        h = datetime.now().hour
+        energy_data = self._calculate_current_energy()
+        
+        # Base Mood Predictor
+        table = [
+            (5, 8, "REVEILLE", "Rising phase. Cortisol levels normalizing.", "#00ccff"),
+            (8, 12, "COMBAT READY", "Peak cognitive function detected.", "#00ff88"),
+            (12, 14, "REFUEL WINDOW", "Midday maintenance.", "#f2a900"),
+            (14, 18, "PEAK OPS", "High-intensity operations active.", "#00ff88"),
+            (18, 22, "WIND DOWN", "Recovery cycle approaching.", "#f2a900"),
+            (22, 5, "RECOVERY", "Sleep critical for combat effectiveness.", "#ff0033")
+        ]
+        
+        mood_label, mood_desc, mood_color = "NOMINAL", "Systems stable.", "#00ccff"
+        for s, e, l, d, c in table:
+            if s <= h < e if s < e else (h >= s or h < e):
+                mood_label, mood_desc, mood_color = l, d, c
+                break
+        
+        # Override mood color if energy is critical
+        if energy_data['score'] < 30:
+            mood_color = "#ff4400"
+            mood_label = "FATIGUE WARNING"
+
+        penalty_html = "".join([f"<div style='font-size: 8px; color: #ff6666;'>• {p}</div>" for p in energy_data['penalties']])
+        
         return (
-            f"<div style='padding: 10px; border-left: 3px solid {mood['color']}; background: rgba(0,40,80,0.15);'>"
-            f"<div style='font-family: Orbitron, sans-serif; font-size: 11px; color: {mood['color']}; letter-spacing: 2px; margin-bottom: 4px;'>"
-            f"STATUS: {mood['label']}</div>"
-            f"<div style='font-family: Montserrat, sans-serif; font-size: 12px; color: #c0d0e0; font-weight: 300;'>"
-            f"{mood['description']}</div>"
-            f"<div style='font-family: Orbitron, sans-serif; font-size: 9px; color: #445566; margin-top: 6px;'>"
-            f"LOCAL TIME: {time_str}</div></div>"
+            f"<div style='padding: 10px; border-left: 3px solid {mood_color}; background: rgba(0,40,80,0.15);'>"
+            f"<div style='display: flex; justify-content: space-between; align-items: flex-start;'>"
+            f"  <div style='font-family: Orbitron, sans-serif; font-size: 11px; color: {mood_color}; letter-spacing: 2px;'>"
+            f"    STATUS: {mood_label}</div>"
+            f"  <div style='font-family: Orbitron, sans-serif; font-size: 10px; color: #e0f0ff;'>"
+            f"    ENERGY: {energy_data['score']}%</div>"
+            f"</div>"
+            f"<div style='height: 3px; background: #112233; margin: 6px 0;'>"
+            f"  <div style='width: {energy_data['score']}%; height: 100%; background: {mood_color};'></div>"
+            f"</div>"
+            f"<div style='font-family: Montserrat, sans-serif; font-size: 11px; color: #c0d0e0; font-weight: 300;'>"
+            f"{mood_desc}</div>"
+            f"<div style='margin-top: 8px;'>{penalty_html}</div>"
+            f"<div style='font-family: Orbitron, sans-serif; font-size: 9px; color: #445566; margin-top: 8px; font-weight: bold;'>"
+            f"BIOMETRIC STATE: {energy_data['status']}</div></div>"
         )
 
     def get_schedule_html(self) -> str:
@@ -534,11 +758,19 @@ class MoodEngine:
         return True
 
     def queue_flexible(self, target_date: str, activity: str, duration: int, priority: int, window: str = "now", deadline: str = "") -> bool:
-        """The Gap Finder with Cognitive Load Balancing and Cross-Day Repacking."""
+        """The Gap Finder with Energy-Aware Overrides."""
         self._init_day(target_date)
         now = datetime.now()
         
-        # Define search window in minutes-since-midnight
+        energy_data = self._calculate_current_energy()
+        
+        # ENERGY OVERRIDE: If energy is critical (<40), ensure 30m buffer before any non-rest task
+        buffer = 0
+        if energy_data['score'] < 40 and "rest" not in activity.lower():
+            log.info(f"Low energy protocol: Injecting buffer for '{activity}'.")
+            buffer = 30
+
+        # Define search window
         w_start, w_end = 0, 23 * 60 + 59
         window = window.lower()
         if "morning" in window: w_start, w_end = 6 * 60, 12 * 60
@@ -559,7 +791,7 @@ class MoodEngine:
         blocks.sort()
         
         # Linear search for first gap
-        cursor = w_start
+        cursor = w_start + buffer
         while cursor + duration <= w_end:
             # --- Cognitive Load Check ---
             # If 4 straight hours of P8+ work exist, enforce 15m buffer
@@ -572,7 +804,7 @@ class MoodEngine:
             for bs, be, bp in blocks:
                 if not (cursor + duration <= bs or cursor >= be):
                     collision = True
-                    cursor = be
+                    cursor = be + buffer
                     break
             
             if not collision:
