@@ -12,8 +12,16 @@ if (!(Get-Command "py" -ErrorAction SilentlyContinue)) {
 
 # 2. Virtual Environment
 Write-Host "[*] Initializing Virtual Environment..."
-py -3.11 -m venv .venv
+if (!(Test-Path ".venv")) {
+    py -3.11 -m venv .venv
+    Write-Host "[OK] Virtual environment created." -ForegroundColor Green
+} else {
+    Write-Host "[*] Virtual environment already exists." -ForegroundColor Yellow
+}
+
+Write-Host "[*] Upgrading pip..."
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
+
 Write-Host "[*] Installing core dependencies (OpenVINO, UI, etc.)..."
 .\.venv\Scripts\pip install -r requirements.txt
 
@@ -29,14 +37,15 @@ if ($response -match "^[yY]") {
     Write-Host "`n[*] Starting Native Vulkan Compilation..." -ForegroundColor Cyan
     
     # VS Build Tools setup for Vulkan
-    $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
+    $vsPath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
     if (!(Test-Path $vsPath)) {
         Write-Host "[!] VS Build Tools not found. Attempting to install via winget..."
         winget install Microsoft.VisualStudio.2022.BuildTools --force --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools" --accept-package-agreements --accept-source-agreements
     }
 
     Write-Host "`n[*] Compiling llama-cpp-python with Vulkan support..." -ForegroundColor Cyan
-    cmd.exe /c "set CMAKE_ARGS=-DGGML_VULKAN=on && .\.venv\Scripts\python.exe -m pip install llama-cpp-python --upgrade --force-reinstall --no-cache-dir"
+    $env:CMAKE_ARGS = "-DGGML_VULKAN=on"
+    .\.venv\Scripts\python.exe -m pip install llama-cpp-python --upgrade --force-reinstall --no-cache-dir
     
     Write-Host "`n[SUCCESS] Vulkan Llama.cpp Engine established!" -ForegroundColor Green
 } else {
@@ -45,6 +54,9 @@ if ($response -match "^[yY]") {
 
 Write-Host "`n==============================================" -ForegroundColor Green
 Write-Host "  INSTALLATION COMPLETE!" -ForegroundColor Green
-Write-Host "Run 'python download_model.py' to acquire AI Core models."
-Write-Host "Run 'python main.py' to launch the Terminal."
+Write-Host "Next steps:"
+Write-Host "1. Activate venv: .\.venv\Scripts\Activate.ps1"
+Write-Host "2. Download models: python download_model.py"
+Write-Host "3. Launch Terminal: python main.py"
+Write-Host "==============================================" -ForegroundColor Green
 Pause
