@@ -57,8 +57,13 @@ class AIBackend:
                 }
             }
         },
-        "required": ["response", "entities", "facts"]
+        "required": ["response", "entities", "facts"],
+        "additionalProperties": False,
+        "items_required": ["action", "intent_type", "event_name"] # Internal hint for schema enforcement if supported
     }
+
+    # Updating schema to make action required within entities
+    EXTRACTION_SCHEMA["properties"]["entities"]["items"]["required"] = ["action", "intent_type", "event_name"]
 
     def __init__(self):
         self.config = self._load_config()
@@ -83,12 +88,16 @@ class AIBackend:
         self.is_loaded = False
         self._lock = threading.Lock()
         
-        # Load Tailored System Prompt
+        # Load Tailored System Prompt (Combined with Default Instructions)
         self.prompts = self._load_prompts()
-        self.system_prompt = self.prompts.get(self.active_model_key, self.prompts.get("default", ""))
+        default_prompt = self.prompts.get("default", "")
+        model_flavor = self.prompts.get(self.active_model_key, "")
         
-        if not self.system_prompt:
-             log.warning(f"No system prompt found for {self.active_model_key}. AI may behave unexpectedly.")
+        # Combine default core instructions with model-specific persona/flavor
+        self.system_prompt = f"{default_prompt}\n\n[CORE PERSONA & MODEL HINTS]\n{model_flavor}"
+        
+        if not default_prompt:
+             log.warning(f"No default system prompt found. AI may behave unexpectedly.")
 
         # Initialization is handled explicitly by main.py boot sequence
         # threading.Thread(target=self.initialize, daemon=True).start()
@@ -123,8 +132,19 @@ class AIBackend:
                 # Force environment variable and explicit all-caps CACHE_DIR key
                 os.environ["OV_GENAI_CACHE_DIR"] = abs_cache_path
                 
-                config = {"CACHE_DIR": abs_cache_path}
-                self.pipe = ov_genai.LLMPipeline(self.model_path, self.target_device, **config)
+                # NPU-specific optimizations and context limits
+                ov_config = {"CACHE_DIR": abs_cache_path}
+                
+                if self.target_device == "NPU":
+                    # Map context_size to MAX_PROMPT_LEN for NPU
+                    ctx_size = self.model_info.get("context_size", 1024)
+                    max_tokens = self.model_info.get("max_tokens", 1024)
+                    
+                    ov_config["MAX_PROMPT_LEN"] = int(ctx_size)
+                    ov_config["PER_DEVICE_MAX_TOKENS"] = int(max_tokens)
+                    log.info(f"NPU optimized: MAX_PROMPT_LEN={ctx_size}, MAX_TOKENS={max_tokens}")
+                
+                self.pipe = ov_genai.LLMPipeline(self.model_path, self.target_device, **ov_config)
                 
                 self.is_loaded = True
                 log.info(f"[SUCCESS] OpenVINO hardware graph mapped to {self.target_device}")
@@ -177,10 +197,11 @@ class AIBackend:
             top_k = self.model_info.get("top_k", 40)
             max_tokens = self.model_info.get("max_tokens", 2048)
             
-            # Advanced Penalties
+            # Advanced Penalties (Unified across engines)
             presence_penalty = self.model_info.get("presence_penalty", 0.0)
             frequency_penalty = self.model_info.get("frequency_penalty", 0.0)
-            repeat_penalty = self.model_info.get("repeat_penalty", 1.1)
+            # Support both naming conventions
+            repeat_penalty = self.model_info.get("repetition_penalty", self.model_info.get("repeat_penalty", 1.1))
             logit_bias = self.model_info.get("logit_bias", None)
             raw_text = ""
             
@@ -257,6 +278,11 @@ class AIBackend:
 
     def _post_process(self, raw_text: str):
         """Standardized JSON parsing with extraction-first schema."""
+        print("\n" + "="*60)
+        print(" [AI CORE] RAW OUTPUT RECEIVED ".center(60, "="))
+        print(raw_text)
+        print("="*60)
+
         try:
             # The engine now GUARANTEES valid JSON matching the schema
             data = json.loads(raw_text)
@@ -265,6 +291,21 @@ class AIBackend:
             facts = data.get("facts", [])
             entities = data.get("entities", [])
             
+            # Print formatted summary for terminal troubleshooting
+            print(f"\n[RESPONSE] >> {response_text}")
+            
+            if facts:
+                print("\n[EXTRACTED FACTS]")
+                for f in facts:
+                    print(f" • {f.get('fact')} ({f.get('category', 'General')})")
+            
+            if entities:
+                print("\n[SCHEDULE UPDATES]")
+                for e in entities:
+                    print(f" • {e.get('action', 'update').upper()}: {e.get('event_name')} @ {e.get('start_time_reference', 'floating')}")
+            
+            print("="*60 + "\n")
+
             # Map entities to schedule_updates for the UI / Logic Layer
             schedule_updates = []
             for ent in entities:
@@ -279,6 +320,8 @@ class AIBackend:
             
         except Exception as e:
             log.error(f"Post-process failure: {e}")
+            print(f"\n[CRITICAL ERROR] Failed to parse AI output: {e}")
+            print("="*60 + "\n")
             # Fallback to legacy extraction if something went horribly wrong
             return f"[ERROR] Output extraction failed: {e}", [], []
 

@@ -103,6 +103,10 @@ class Api:
                         pass
 
             # Synchronous generation with the new callback
+            print("\n" + ">"*60)
+            print(f" [USER MESSAGE] >> {text}")
+            print(">"*60)
+
             response_html, facts, schedule_updates = ai._generate_sync(
                 text, rag_context, stream_callback=stream_callback
             )
