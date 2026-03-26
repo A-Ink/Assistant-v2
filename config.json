@@ -2,8 +2,33 @@
   "active_model": "qwen-2.5-7b",
   "cache_dir": "model_cache",
   "models": {
+    "qwen-2.5-7b": {
+      "display_name": "Qwen 2.5 7B - Balanced Core",
+      "hf_model_id": "OpenVINO/Qwen2.5-7B-Instruct-int4-ov",
+      "engine": "openvino",
+      "target_device": "NPU",
+      "path": "./model/Qwen2.5-7B-Instruct-int4-ov",
+      "temperature": 0.1,
+      "max_tokens": 2048,
+      "context_size": 2048,
+      "top_p": 0.9,
+      "top_k": 40
+    },
+    "qwen-3-8b": {
+      "display_name": "Qwen 3 8B - Reasoning Core",
+      "hf_model_id": "OpenVINO/Qwen3-8B-int4-cw-ov",
+      "engine": "openvino",
+      "target_device": "NPU",
+      "path": "./model/Qwen3-8B-int4-cw-ov",
+      "temperature": 0.3,
+      "max_tokens": 2048,
+      "context_size": 2048,
+      "top_p": 0.9,
+      "top_k": 40
+    },
     "phi-4-mini": {
       "display_name": "Phi-4 Mini - Speed Core",
+      "hf_model_id": "OpenVINO/Phi-4-mini-instruct-int4-ov",
       "engine": "openvino",
       "target_device": "NPU",
       "path": "./model/phi-4-mini-instruct-int4-ov-npu",
@@ -13,33 +38,12 @@
       "top_p": 0.9,
       "top_k": 40
     },
-    "qwen-2.5-7b": {
-      "display_name": "Qwen 2.5 7B - Balanced Core",
-      "engine": "openvino",
-      "target_device": "NPU",
-      "path": "./model/Qwen2.5-7B-Instruct-int4-ov-npu",
-      "temperature": 0.1,
-      "max_tokens": 2048,
-      "context_size": 2048,
-      "top_p": 0.9,
-      "top_k": 40
-    },
-    "qwen-3-8b": {
-      "display_name": "Qwen 3 8B - Reasoning Core",
-      "engine": "openvino",
-      "target_device": "NPU",
-      "path": "./model/Qwen3-8B-int4-cw-ov-npu",
-      "temperature": 0.3,
-      "max_tokens": 2048,
-      "context_size": 2048,
-      "top_p": 0.9,
-      "top_k": 40
-    },
     "mistral-7b": {
       "display_name": "Mistral 7B - Execution Core",
+      "hf_model_id": "OpenVINO/Mistral-7B-Instruct-v0.3-int4-cw-ov",
       "engine": "openvino",
       "target_device": "NPU",
-      "path": "./model/Mistral-7B-Instruct-v0.3-int4-cw-ov-npu",
+      "path": "./model/Mistral-7B-Instruct-v0.3-int4-cw-ov",
       "temperature": 0.3,
       "max_tokens": 2048,
       "context_size": 2048,

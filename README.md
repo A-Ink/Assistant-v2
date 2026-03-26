@@ -51,5 +51,6 @@ For devices without an NPU, the terminal supports the **Vulkan Engine** via `lla
 ## ⚙️ Technical Requirements
 
 - **OS**: Windows 11
-- **Python**: 3.11 (Managed via `setup.ps1`)
+- **Python**: 3.12 (Managed via `setup.ps1`)
 - **Hardware**: Intel Core Ultra (NPU) or Intel Arc/iGPU (Vulkan)
+- **AI Core**: OpenVINO 2026.0.x

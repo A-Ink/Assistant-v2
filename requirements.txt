@@ -13,11 +13,11 @@ PyYAML
 # --- ENGINE 1: NPU (OpenVINO Core) ---
 # STRICT LOCK: These exact versions prevent the "Architecture Gap" 
 # and CLI compilation crashes when downloading new models.
-transformers==4.53.3
+transformers==4.57.0
 optimum-intel[openvino,nncf]==1.27.0
-openvino==2025.4.1
-openvino-genai==2025.4.1
-openvino-tokenizers==2025.4.1
+openvino==2026.0.0
+openvino-genai==2026.0.0
+openvino-tokenizers==2026.0.0
 
 # --- ENGINE 2: iGPU (Vulkan Core) ---
 # NOTE: llama-cpp-python requires C++ Compilation on Windows to map to Vulkan properly.

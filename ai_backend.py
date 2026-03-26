@@ -212,11 +212,11 @@ class AIBackend:
                     # --- OPENVINO GENERATION LOGIC ---
                     full_prompt = f"<|system|>{self.system_prompt}\n{context_block}<|end|>\n<|user|>{user_message}<|end|>\n<|assistant|>"
                     
-                    def ov_streamer(subword: str) -> bool:
+                    def ov_streamer(subword: str) -> ov_genai.StreamingStatus:
                         nonlocal raw_text
                         raw_text += subword
                         if stream_callback: stream_callback(subword)
-                        return False 
+                        return ov_genai.StreamingStatus.RUNNING
 
                     # Use GenerationConfig object instead of dict (Required in 2025.4.1+)
                     ov_config = ov_genai.GenerationConfig()

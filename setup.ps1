@@ -3,9 +3,9 @@ Write-Host "  N7 TERMINAL : AUTOMATED DEPLOYMENT SCRIPT" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
 # 1. Check Python
-Write-Host "`n[*] Verifying Python 3.11 Environment..."
+Write-Host "`n[*] Verifying Python 3.12 Environment..."
 if (!(Get-Command "py" -ErrorAction SilentlyContinue)) {
-    Write-Host "[!] Python Launcher 'py' not found. Please install Python 3.11 from python.org." -ForegroundColor Red
+    Write-Host "[!] Python Launcher 'py' not found. Please install Python 3.12 from python.org." -ForegroundColor Red
     Pause
     exit
 }
@@ -13,7 +13,7 @@ if (!(Get-Command "py" -ErrorAction SilentlyContinue)) {
 # 2. Virtual Environment
 Write-Host "[*] Initializing Virtual Environment..."
 if (!(Test-Path ".venv")) {
-    py -3.11 -m venv .venv
+    py -3.12 -m venv .venv
     Write-Host "[OK] Virtual environment created." -ForegroundColor Green
 } else {
     Write-Host "[*] Virtual environment already exists." -ForegroundColor Yellow
