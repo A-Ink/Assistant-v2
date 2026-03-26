@@ -30,6 +30,7 @@ class UserIntent(BaseModel):
     duration_minutes: Optional[int] = Field(60, description="Inferred duration.")
     priority: int = Field(5, ge=1, le=10, description="Priority scale 1-10.")
     deadline: Optional[str] = Field(None, description="ISO format deadline string.")
+    date_reference: Optional[str] = Field(None, description="e.g., 'today', 'tomorrow'. Specific dates also supported.")
 
 class ParsedInput(BaseModel):
     intents: List[UserIntent]
@@ -61,17 +62,28 @@ class MoodEngine:
 
     def _init_day(self, target_date: str):
         """Ensures a date entry exists and runs daily biological checks."""
+        if hasattr(self, "_in_init") and self._in_init == target_date:
+            return
+        
         if target_date not in self.schedule_db:
-            self.schedule_db[target_date] = []
-            self._inject_daily_biological_anchors(target_date)
+            self._in_init = target_date
+            try:
+                self.schedule_db[target_date] = []
+                self._inject_daily_biological_anchors(target_date)
+            finally:
+                self._in_init = None
 
     def _inject_daily_biological_anchors(self, target_date: str):
-        """Anchors meals and checks for sleep debt recovery."""
-        # Standard Biological Anchors (Priority 8 for main meals, 4 for snacks)
+        """Anchors meals, sleep/wake cycles, and checks for recovery protocols."""
+        # 1. Primary Biological Anchors (Shiftable)
+        self._force_slot(target_date, "07:00", 15, "Wake (Biological Anchor)", 8, "biological")
+        self._force_slot(target_date, "23:00", 480, "Sleep (Biological Anchor)", 8, "sleep")
+
+        # 2. Main Meals (Priority 8)
         self._force_slot(target_date, "08:30", 45, "Breakfast", 8, "meal")
-        self._force_slot(target_date, "12:30", 60, "Lunch", 8, "meal")
-        self._force_slot(target_date, "15:30", 15, "Snack", 4, "meal")
+        self._force_slot(target_date, "13:00", 60, "Lunch", 8, "meal")
         self._force_slot(target_date, "19:00", 60, "Dinner", 8, "meal")
+        self._force_slot(target_date, "16:00", 15, "Snack", 4, "meal")
         
         # Check Sleep Debt
         debt_mins = self._calculate_sleep_debt(target_date)
@@ -198,23 +210,64 @@ class MoodEngine:
 
     def _execute_intent(self, intent: UserIntent) -> bool:
         """Internal executor for a single UserIntent."""
+        now = datetime.now()
         target_date = date.today().isoformat()
         
-        # Parse start_time_reference if it's relative
+        # 1. Parse time reference and handle field-mixing (Auto-Correction)
         if intent.start_time_reference:
-            parsed = self._parse_time_reference(intent.start_time_reference)
-            if parsed:
-                intent.start_time_reference = parsed
+            s_ref = intent.start_time_reference.lower().strip()
+            # If AI put a date keyword in the time field, move it
+            if s_ref in ["today", "tomorrow"] and not intent.date_reference:
+                intent.date_reference = s_ref
+                intent.start_time_reference = None
+                log.info(f"Auto-corrected date keyword '{s_ref}' from time field.")
+            else:
+                parsed = self._parse_time_reference(intent.start_time_reference)
+                if parsed:
+                    intent.start_time_reference = parsed
 
-        # Handle Deletions/Modifications by Name
+        # 2. DATE INFERENCE (Explicit vs Duration-Aware Guessing)
+        if intent.date_reference:
+            ref = intent.date_reference.lower()
+            if "tomorrow" in ref:
+                target_date = (date.today() + timedelta(days=1)).isoformat()
+            elif "today" in ref:
+                target_date = date.today().isoformat()
+            else:
+                try:
+                    # Support for "2026-03-27" etc.
+                    target_date = date.fromisoformat(ref).isoformat()
+                except ValueError:
+                    pass # Fall back to today
+        
+        # Duration-aware fallback if no explicit date given
+        elif intent.start_time_reference and ":" in intent.start_time_reference:
+            try:
+                h, m = map(int, intent.start_time_reference.split(':'))
+                duration = intent.duration_minutes or 60
+                # Check if it completely ended in the past
+                if h * 60 + m + duration < now.hour * 60 + now.minute:
+                    target_date = (date.today() + timedelta(days=1)).isoformat()
+                    log.info(f"Target complete past. Shifting '{intent.event_name}' to tomorrow ({target_date}).")
+                elif h == 0 and m == 0 and now.hour >= 21:
+                    target_date = (date.today() + timedelta(days=1)).isoformat()
+            except Exception:
+                pass
+
+        self._init_day(target_date)
+
+        # 3. CONTROLLED DELETIONS/MODIFICATIONS
         if intent.action in ["delete", "modify"]:
-            # Search both today and tomorrow by default for deletions
-            search_dates = [date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()]
             found = False
+            # If a specific date or time was given, ONLY search that target
+            if intent.date_reference or intent.start_time_reference:
+                search_dates = [target_date]
+            else:
+                # Priority search: Today first, then tomorrow as fallback
+                search_dates = [date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()]
+            
             for d_str in search_dates:
                 tasks = self.schedule_db.get(d_str, [])
-                # Fuzzy match: case-insensitive and check if event_name is in activity OR activity is in event_name
-                # This helps if user says "midnight snack" and it's just "Snack" (or vice versa)
                 new_tasks = [
                     t for t in tasks 
                     if not (intent.event_name.lower() in t['activity'].lower() or t['activity'].lower() in intent.event_name.lower())
@@ -222,28 +275,14 @@ class MoodEngine:
                 if len(new_tasks) < len(tasks):
                     self.schedule_db[d_str] = new_tasks
                     found = True
+                    log.info(f"Deleted '{intent.event_name}' from {d_str}")
+                    if intent.start_time_reference: break # Found in targeted date
             
             if found and intent.action == "delete":
                 return True
-            # If modify, we fall through with the cleaned schedule (where possible)
+            # For modify, we continue to create the 'new' version
             
-        # --- NEXT OCCURRENCE LOGIC ---
-        # If a time is provided and it has already passed today, assume it's for tomorrow.
-        now = datetime.now()
-        if intent.start_time_reference and ":" in intent.start_time_reference:
-            try:
-                h, m = map(int, intent.start_time_reference.split(':'))
-                if h * 60 + m < now.hour * 60 + now.minute:
-                    # Time has passed, move to tomorrow
-                    target_date = (date.today() + timedelta(days=1)).isoformat()
-                    log.info(f"Time {intent.start_time_reference} has passed today. Scheduling for tomorrow ({target_date}).")
-                elif h == 0 and m == 0: # Midnight specifically
-                     # If it's late at night (e.g. after 9pm), midnight means tomorrow
-                     if now.hour >= 21:
-                         target_date = (date.today() + timedelta(days=1)).isoformat()
-                         log.info(f"Late night request for midnight. Scheduling for tomorrow ({target_date}).")
-            except Exception:
-                pass
+        # --- PRIORITY HIERARCHY / FLEXIBILITY RULES ---
 
         # --- PRIORITY HIERARCHY / FLEXIBILITY RULES ---
         # School/Fixed Items (P9)
@@ -377,10 +416,11 @@ class MoodEngine:
             dt = t['_abs_dt']
             is_active = dt <= now < dt + timedelta(minutes=t['duration'])
             curr_class = " current" if is_active else ""
+            task_type = t.get('type', 'task')
             pri_color = "var(--orange-n7)" if t.get('priority', 5) >= 8 else "var(--text-dim)"
             
             parts.append(
-                f"<div class='schedule-entry{curr_class}'>"
+                f"<div class='schedule-entry{curr_class} {task_type}'>"
                 f"<span style='color: var(--cyan-bright); font-family: Orbitron, monospace; font-size: 13px; letter-spacing: 1px; font-weight: bold;'>{t['start_time']}</span> "
                 f"<span class='schedule-task'>{t['activity']}</span> "
                 f"<span style='color: {pri_color}; font-size: 0.8em;'>({t['duration']}m)</span>"
@@ -426,16 +466,43 @@ class MoodEngine:
             te = ts + task['duration']
             
             if not (new_end <= ts or new_start >= te):
+                # --- DYNAMIC ANCHOR SHIFTING ---
+                # If a new task hits a biological anchor, we shift the anchor instead of evicting it
+                if "biological anchor" in task['activity'].lower() or task['type'] in ["sleep", "biological"]:
+                    if "wake" in task['activity'].lower() and new_start <= ts + 30:
+                        # Shift Wake earlier to accommodate the new early task
+                        log.info(f"Shifting Wake earlier for '{activity}'")
+                        task['start_time'] = f"{max(0, new_start - 45)//60:02d}:{max(0, new_start - 45)%60:02d}"
+                        survivors.append(task)
+                        continue
+                    
+                    if "sleep" in task['activity'].lower() and new_end > ts:
+                        # Shift Sleep later if the activity ends after bedtime
+                        log.info(f"Shifting Sleep later for '{activity}'")
+                        # Move sleep to 15m after the activity ends
+                        new_sleep_start = new_end + 15
+                        
+                        # Handle Rollover
+                        final_h, final_m = (new_sleep_start // 60), (new_sleep_start % 60)
+                        final_date = target_date
+                        if final_h >= 24:
+                            final_h -= 24
+                            final_date = (date.fromisoformat(target_date) + timedelta(days=1)).isoformat()
+                            self._init_day(final_date) # Ensure tomorrow exists
+                        
+                        task['start_time'] = f"{final_h:02d}:{final_m:02d}"
+                        
+                        # If date changed, move the task to the new day's list
+                        if final_date != target_date:
+                            self.schedule_db[final_date].append(task)
+                            self.schedule_db[final_date].sort(key=lambda x: x['start_time'])
+                            continue # Don't add to survivors for the CURRENT date
+                        
+                        survivors.append(task)
+                        continue
+
                 # Overlap detected
                 task_pri = self._apply_deadline_gravity(task['priority'], task.get('deadline'))
-                
-                # Special Case: Allow pushing 'Sleep' start time for user requests
-                if task['activity'].lower() == "sleep" and new_start < 120: # If it's early morning conflict
-                    log.warning(f"Pushing Sleep start for '{activity}'")
-                    task['start_time'] = f"{h:02d}:{m+duration:02d}" if m+duration < 60 else f"{h+(m+duration)//60:02d}:{(m+duration)%60:02d}"
-                    task['duration'] -= duration
-                    survivors.append(task)
-                    continue
 
                 if task_pri < effective_priority:
                     log.warning(f"Evicting '{task['activity']}' for higher priority '{activity}'")
