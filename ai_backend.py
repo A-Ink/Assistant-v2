@@ -45,7 +45,8 @@ class AIBackend:
                         "duration_minutes":     {"type": "integer"},
                         "priority":             {"type": "integer"},
                         "deadline":             {"type": "string"},
-                        "date_reference":       {"type": "string"}
+                        "date_reference":       {"type": "string"},
+                        "auto_schedule":        {"type": "boolean", "description": "True: engine picks next valid slot from now (energy, gaps). Do not invent HH:MM."}
                     }
                 }
             },
@@ -125,6 +126,9 @@ class AIBackend:
         self.pipe = None
         self.is_loaded = False
         self._lock = threading.Lock()
+        # NPU static pipeline: prompt must fit in MAX_PROMPT_LEN; total_ctx >= prompt + generation
+        self._openvino_total_context: int = int(self.model_info.get("context_size", 2048))
+        self._openvino_prompt_cap: int = self._openvino_total_context  # tightened in initialize() for NPU
         
         # Load Tailored System Prompt (Combined with Default Instructions)
         self.prompts = self._load_prompts()
@@ -208,14 +212,25 @@ class AIBackend:
                 ov_config = {"CACHE_DIR": abs_cache_path}
                 
                 if self.target_device == "NPU":
-                    # Map context_size to MAX_PROMPT_LEN for NPU
-                    # We maintain the user's requested large context but set safe defaults if missing
-                    ctx_size = self.model_info.get("context_size", 2048)
-                    max_tokens = self.model_info.get("max_tokens", 1024)
-                    
-                    ov_config["MAX_PROMPT_LEN"] = int(ctx_size)
-                    ov_config["PER_DEVICE_MAX_TOKENS"] = int(max_tokens)
-                    log.info(f"NPU optimized: {ov_config}")
+                    # NPU uses a static prompt buffer: MAX_PROMPT_LEN is the max *prompt* tokens.
+                    # Generation (max_new_tokens) uses the same total KV budget — do NOT set
+                    # MAX_PROMPT_LEN == full model context while also reserving large max_new_tokens,
+                    # or tokenization asserts (e.g. input_ids.get_size()).
+                    ctx_size = int(self.model_info.get("context_size", 2048))
+                    max_gen_cfg = int(self.model_info.get("max_tokens", 1024))
+                    safety = 96
+                    # Cap generation so prompt_cap stays sane on small contexts (e.g. phi 1024 ctx)
+                    max_gen_effective = min(max_gen_cfg, max(128, ctx_size // 2))
+                    prompt_cap = max(512, ctx_size - max_gen_effective - safety)
+                    ov_config["MAX_PROMPT_LEN"] = prompt_cap
+                    # Documented NPU hint (min decoded length); helps some static shapes
+                    ov_config["MIN_RESPONSE_LEN"] = min(max_gen_effective, 512)
+                    self._openvino_total_context = ctx_size
+                    self._openvino_prompt_cap = prompt_cap
+                    log.info(
+                        f"NPU optimized: total_ctx={ctx_size}, MAX_PROMPT_LEN={prompt_cap}, "
+                        f"max_gen_cap≈{max_gen_effective}, config={ov_config}"
+                    )
                 # Resolve absolute path and then shorten it for NPU stability (8.3 notation)
                 self.pip_path = os.path.abspath(self.model_path)
                 short_pip_path = self._get_win32_short_path(self.pip_path)
@@ -246,8 +261,8 @@ class AIBackend:
                     # Drastically reduce context for emergency boot
                     safe_config = {
                         "CACHE_DIR": abs_cache_path,
-                        "MAX_PROMPT_LEN": 1024,
-                        "PER_DEVICE_MAX_TOKENS": 512
+                        "MAX_PROMPT_LEN": 768,
+                        "MIN_RESPONSE_LEN": 256,
                     }
                     try:
                         self.pipe = ov_genai.LLMPipeline(short_pip_path, self.target_device, **safe_config)
@@ -292,12 +307,104 @@ class AIBackend:
                 log.error(f"[FATAL] Llama.cpp initialization failed: {e}")
                 self.is_loaded = False
 
+    @staticmethod
+    def _estimate_prompt_tokens(text: str) -> int:
+        """Rough upper bound on token count (mixed EN + JSON); avoids NPU context overflow."""
+        if not text:
+            return 1
+        return max(1, (len(text) + 3) // 4)
+
+    def _budget_openvino_prompt(self, user_message: str, rag_context: str) -> tuple[str, int]:
+        """
+        Fit prompt + max_new_tokens within model context window.
+        NPU/OpenVINO assert if prompt_tokens + max_new > context (see input_ids.get_size()).
+        On NPU, MAX_PROMPT_LEN may be much smaller than context_size — use self._openvino_prompt_cap.
+        """
+        total_ctx = int(self.model_info.get("context_size", 2048))
+        max_tokens_cfg = int(self.model_info.get("max_tokens", 1024))
+        # Hard prompt token budget (must match NPU MAX_PROMPT_LEN set in initialize)
+        prompt_cap = int(getattr(self, "_openvino_prompt_cap", total_ctx))
+        max_gen_effective = min(max_tokens_cfg, max(128, total_ctx // 2))
+        safety = 96  # tokenizer specials + structured JSON schema overhead
+
+        user_message = (user_message or "").strip() or "."
+        dossier = rag_context or ""
+
+        def context_block_from(d: str) -> str:
+            return f"\n\n[DOSSIER FACTS]\n{d}\n" if d else ""
+
+        def make_full(system_text: str, cb: str) -> str:
+            return (
+                f"<|system|>{system_text}\n{cb}<|end|>\n"
+                f"<|user|>{user_message}<|end|>\n<|assistant|>"
+            )
+
+        sys_text = self.system_prompt
+        cb = context_block_from(dossier)
+        full = make_full(sys_text, cb)
+
+        pt = self._estimate_prompt_tokens(full)
+
+        def cap_max_new() -> int:
+            # Total sequence must fit in model context; prompt must fit in NPU prompt buffer
+            by_total = max(32, min(max_gen_effective, total_ctx - pt - safety))
+            return max(32, min(by_total, total_ctx - pt - safety))
+
+        max_new = cap_max_new()
+
+        iteration = 0
+        while (pt > prompt_cap or pt + max_new > total_ctx) and iteration < 48:
+            iteration += 1
+            if len(dossier) > 400:
+                dossier = dossier[: max(200, len(dossier) * 2 // 3)] + "\n[... dossier truncated ...]"
+            elif cb:
+                cb = ""
+                dossier = ""
+            elif len(sys_text) > 5000:
+                sys_text = (
+                    sys_text[: max(3500, len(sys_text) * 2 // 3)]
+                    + "\n[... system instructions truncated ...]"
+                )
+            elif len(sys_text) > 2200:
+                sys_text = (
+                    sys_text[: max(1800, len(sys_text) * 2 // 3)]
+                    + "\n[... system instructions truncated ...]"
+                )
+            else:
+                max_new = max(32, max_new // 2)
+            cb = context_block_from(dossier)
+            full = make_full(sys_text, cb)
+            pt = self._estimate_prompt_tokens(full)
+            max_new = cap_max_new()
+
+        max_new = max(32, min(max_new, total_ctx - pt - safety, max_gen_effective))
+
+        # Final hard cap on characters so tokenizer cannot exceed NPU MAX_PROMPT_LEN
+        max_chars_budget = max(400, prompt_cap * 3 - 64)
+        if len(full) > max_chars_budget:
+            full = full[:max_chars_budget] + "\n[... truncated to NPU prompt limit ...]"
+            pt = self._estimate_prompt_tokens(full)
+            max_new = max(32, min(max_gen_effective, total_ctx - pt - safety))
+
+        if pt + max_new > total_ctx:
+            max_chars = max(400, (total_ctx - max_new - safety) * 3)
+            if len(full) > max_chars:
+                full = full[:max_chars] + "\n[... truncated ...]"
+                pt = self._estimate_prompt_tokens(full)
+                max_new = max(32, min(max_gen_effective, total_ctx - pt - safety))
+
+        log.info(
+            f"OpenVINO context budget: est_prompt_tokens≈{pt}, max_new_tokens={max_new}, "
+            f"total_ctx={total_ctx}, prompt_cap={prompt_cap}"
+        )
+        return full, max_new
+
     def _generate_sync(self, user_message: str, rag_context: str = "", stream_callback=None):
         """Unified Generator handling both OpenVINO and Llama.cpp logic."""
         with self._lock:
             if not self.is_loaded:
                 log.error("Attempted generation while core was offline.")
-                return "[ERROR] AI Core offline. Check logs.", [], []
+                return "[ERROR] AI Core offline. Check logs.", [], [], [], [], None
 
             context_block = ""
             if rag_context:
@@ -322,11 +429,11 @@ class AIBackend:
             try:
                 if self.engine_type == "openvino":
                     # --- OPENVINO GENERATION LOGIC ---
-                    full_prompt = f"<|system|>{self.system_prompt}\n{context_block}<|end|>\n<|user|>{user_message}<|end|>\n<|assistant|>"
+                    full_prompt, ov_max_new = self._budget_openvino_prompt(user_message, rag_context)
                     
                     # LOG TELEMETRY
                     log.info(f"System Message Size: {len(self.system_prompt)} chars")
-                    log.info(f"Context Block Size: {len(context_block)} chars")
+                    log.info(f"RAG / dossier size: {len(rag_context or '')} chars")
                     log.info(f"Total Prompt String Size: {len(full_prompt)} chars")
                     
                     def ov_streamer(subword: str) -> ov_genai.StreamingStatus:
@@ -337,7 +444,7 @@ class AIBackend:
 
                     # Use GenerationConfig object instead of dict (Required in 2025.4.1+)
                     ov_config = ov_genai.GenerationConfig()
-                    ov_config.max_new_tokens = max_tokens
+                    ov_config.max_new_tokens = ov_max_new
                     ov_config.do_sample = temp > 0
                     ov_config.temperature = temp
                     ov_config.top_p = top_p
@@ -350,13 +457,26 @@ class AIBackend:
                     # Note: In 2025.4+, json_schema is a property, not a callable method.
                     so_config = StructuredOutputConfig()
                     so_config.json_schema = json.dumps(self.EXTRACTION_SCHEMA)
-                    
-                    self.pipe.generate(
-                        full_prompt, 
-                        streamer=ov_streamer,
-                        generation_config=ov_config,
-                        structured_output_config=so_config
-                    )
+
+                    try:
+                        self.pipe.generate(
+                            full_prompt,
+                            streamer=ov_streamer,
+                            generation_config=ov_config,
+                            structured_output_config=so_config,
+                        )
+                    except Exception as gen_exc:
+                        # Some NPU + xgrammar builds fail tokenization; plain generate still works.
+                        log.warning(
+                            "Structured JSON generation failed (%s); retrying without schema.",
+                            gen_exc,
+                        )
+                        raw_text = ""
+                        self.pipe.generate(
+                            full_prompt,
+                            streamer=ov_streamer,
+                            generation_config=ov_config,
+                        )
 
                 elif self.engine_type == "llama.cpp":
                     # --- LLAMA.CPP GENERATION LOGIC ---

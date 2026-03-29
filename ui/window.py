@@ -71,7 +71,7 @@ class TitleBar(QWidget):
                           f"QPushButton:hover{{background:rgba(0,229,255,0.15);}}"
             btn.setStyleSheet(f"""
                 QPushButton{{background:transparent; color:{C_TEXT}; border:none;
-                             font-family:Montserrat; font-size:13px;}}
+                             font-family:{S_MONTSERRAT}; font-size:13px;}}
                 {close_style}
             """)
             btn.clicked.connect(signal)
@@ -84,7 +84,7 @@ class TitleBar(QWidget):
         btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         btn.setToolTip(tip)
         btn.setStyleSheet(f"""
-            QPushButton{{background:transparent; color:{C_TEXT_DIM}; border:none; font-family:Orbitron; font-size:7px;}}
+            QPushButton{{background:transparent; color:{C_TEXT_DIM}; border:none; font-family:{S_ORBITRON}; font-size:7px;}}
             QPushButton:hover{{color:{C_CYAN}; background:rgba(0,229,255,0.10);}}
         """)
         return btn

@@ -331,7 +331,7 @@ class TabStrip(QWidget):
                         border: none;
                         border-bottom: 2px solid {C_CYAN};
                         padding: 0 10px;
-                        font-family: Orbitron;
+                        font-family: {S_ORBITRON};
                         font-size: 8px;
                         letter-spacing: 2px;
                     }}
@@ -344,7 +344,7 @@ class TabStrip(QWidget):
                         border: none;
                         border-bottom: 2px solid {C_BORDER};
                         padding: 0 10px;
-                        font-family: Orbitron;
+                        font-family: {S_ORBITRON};
                         font-size: 8px;
                         letter-spacing: 2px;
                     }}

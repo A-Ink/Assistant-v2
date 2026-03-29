@@ -53,22 +53,34 @@ def load_fonts():
                 QFontDatabase.addApplicationFont(str(f))
     _fonts_loaded = True
 
+# ── Montserrat Fallback Stack (Body/Data)
+# Standard: Montserrat, "Segoe UI", "Helvetica Neue", Arial, sans-serif
+S_MONTSERRAT = '"Montserrat", "Segoe UI", "Helvetica Neue", Arial, sans-serif'
+
+# ── Orbitron Fallback Stack (Headings/Tactical)
+# Standard: Orbitron, "Impact", "Trebuchet MS", "Arial Black", sans-serif
+S_ORBITRON = '"Orbitron", "Impact", "Trebuchet MS", "Arial Black", sans-serif'
+
 # ── Font helpers ───────────────────────────────────────────────────────────────
 def font_orbitron(size: int = 12, weight=QFont.Weight.Normal) -> QFont:
     """Orbitron — for headings, labels, badges, anything structural."""
     f = QFont("Orbitron", size)
     f.setWeight(weight)
     f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
+    # Hinting fallbacks for QFont system
+    f.setStyleHint(QFont.StyleHint.SansSerif)
     return f
 
 def font_body(size: int = 11) -> QFont:
     """Montserrat — for all body/prose text, chat messages, descriptions."""
     f = QFont("Montserrat", size)
+    f.setStyleHint(QFont.StyleHint.SansSerif)
     return f
 
 def font_mono(size: int = 10) -> QFont:
-    """Consolas — for timestamps, codes, RAM values."""
-    f = QFont("Consolas", size)
+    """Consolidated to Montserrat Regular for data consistency."""
+    f = QFont("Montserrat", size)
+    f.setStyleHint(QFont.StyleHint.SansSerif)
     return f
 
 # ── priority color ─────────────────────────────────────────────────────────────
@@ -85,7 +97,7 @@ def global_stylesheet() -> str:
     QWidget {{
         background-color: transparent;
         color: {C_TEXT};
-        font-family: "Montserrat", "Segoe UI";
+        font-family: {S_MONTSERRAT};
         font-size: 11px;
         border: none;
     }}
@@ -139,7 +151,7 @@ def global_stylesheet() -> str:
         border: 1px solid {C_BORDER};
         border-radius: 6px;
         padding: 8px;
-        font-family: "Montserrat", "Segoe UI";
+        font-family: {S_MONTSERRAT};
         font-size: 11px;
         selection-background-color: {C_CYAN_DIM};
     }}
@@ -154,7 +166,7 @@ def global_stylesheet() -> str:
         border: 1px solid {C_BORDER_LIT};
         border-radius: 4px;
         padding: 5px 12px;
-        font-family: "Montserrat";
+        font-family: {S_MONTSERRAT};
         font-size: 11px;
     }}
     QPushButton:hover {{

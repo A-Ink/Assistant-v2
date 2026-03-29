@@ -31,6 +31,10 @@ class UserIntent(BaseModel):
     priority: int = Field(5, ge=1, le=10, description="Priority scale 1-10.")
     deadline: Optional[str] = Field(None, description="ISO format deadline string.")
     date_reference: Optional[str] = Field(None, description="e.g., 'today', 'tomorrow'. Specific dates also supported.")
+    auto_schedule: bool = Field(
+        False,
+        description="If True, engine picks the next valid slot (energy/gaps); do not rely on start_time_reference for placement.",
+    )
 
 class ParsedInput(BaseModel):
     intents: List[UserIntent]
@@ -286,6 +290,67 @@ class LogicEngine:
         threshold = 7 * 60 # 420 minutes
         return max(0, threshold - total_sleep) if total_sleep > 0 else 0
 
+    def _resolve_target_date_from_intent(self, intent: UserIntent) -> str:
+        """Map date_reference (today|tomorrow|yesterday|ISO) to YYYY-MM-DD. Defaults to today."""
+        target_date = date.today().isoformat()
+        if not intent.date_reference:
+            return target_date
+        ref = intent.date_reference.lower().strip()
+        if "tomorrow" in ref:
+            return (date.today() + timedelta(days=1)).isoformat()
+        if "today" in ref:
+            return date.today().isoformat()
+        if "yesterday" in ref:
+            return (date.today() - timedelta(days=1)).isoformat()
+        try:
+            return date.fromisoformat(intent.date_reference.strip()).isoformat()
+        except ValueError:
+            return target_date
+
+    def _sleep_consistency_context_lines(self) -> List[str]:
+        """Bedtime / wake-time spread over the last 7 days for lifestyle messaging."""
+        bed_minutes: List[int] = []
+        wake_minutes: List[int] = []
+        for i in range(7):
+            d_str = (date.today() - timedelta(days=i)).isoformat()
+            day = self.schedule_db.get(d_str, [])
+            sleep_ev = next((t for t in day if "sleep" in t.get("activity", "").lower()), None)
+            wake_ev = next((t for t in day if "wake" in t.get("activity", "").lower()), None)
+            if sleep_ev and sleep_ev.get("start_time"):
+                bed_minutes.append(self._time_to_minutes(sleep_ev["start_time"]))
+            if wake_ev and wake_ev.get("start_time"):
+                wake_minutes.append(self._time_to_minutes(wake_ev["start_time"]))
+        lines: List[str] = []
+        if len(bed_minutes) < 2 and len(wake_minutes) < 2:
+            return lines
+
+        def spread(vals: List[int]) -> Optional[int]:
+            if len(vals) < 2:
+                return None
+            return max(vals) - min(vals)
+
+        bs = spread(bed_minutes)
+        ws = spread(wake_minutes)
+        parts = []
+        if bs is not None:
+            parts.append(f"bedtime spread ~{bs}m across logged days")
+        if ws is not None:
+            parts.append(f"wake-time spread ~{ws}m across logged days")
+        if parts:
+            lines.append("[SLEEP CONSISTENCY — last 7 days]")
+            lines.append(
+                "; ".join(parts)
+                + ". Irregular schedules reduce sleep quality even when duration is adequate."
+            )
+        return lines
+
+    def _inject_sleep_debt_recovery_if_needed(self, target_date: str) -> None:
+        """Queue recovery nap when yesterday's sleep was below threshold (no anchor realignment)."""
+        debt_mins = self._calculate_sleep_debt(target_date)
+        if debt_mins > 0:
+            log.info(f"Sleep debt detected: {debt_mins}m. Injecting recovery protocol.")
+            self.queue_flexible(target_date, "Powernap (Sleep Recovery)", 45, 9, "afternoon")
+
     def get_context_for_ai(self) -> str:
         """Injects hardware time, biological constraints, and pending verification into the AI context."""
         now = datetime.now()
@@ -300,6 +365,9 @@ class LogicEngine:
         
         if debt_mins > 0:
             context.append(f"[BIOMEDICAL ALERT] CRITICAL SLEEP DEBT: {debt_mins}m deficit. Focus degraded.")
+
+        for line in self._sleep_consistency_context_lines():
+            context.append(line)
         
         # --- PENDING VERIFICATION (ZOMBIE TASKS) ---
         zombies = []
@@ -345,21 +413,7 @@ class LogicEngine:
         sorted_intents = sorted(data.intents, key=lambda x: priority_map.get(x.action, 2))
         
         # 1. Initialize days for all intents
-        target_dates = set()
-        for intent in data.intents:
-            target_date = date.today().isoformat()
-            if intent.date_reference:
-                ref = intent.date_reference.lower()
-                if "tomorrow" in ref:
-                    target_date = (date.today() + timedelta(days=1)).isoformat()
-                elif "today" in ref:
-                    target_date = date.today().isoformat()
-                else:
-                    try: 
-                        target_date = date.fromisoformat(ref).isoformat()
-                    except ValueError: 
-                        pass
-            target_dates.add(target_date)
+        target_dates = {self._resolve_target_date_from_intent(intent) for intent in data.intents}
         
         for d in target_dates:
             self._init_day(d)
@@ -367,18 +421,7 @@ class LogicEngine:
         self._suppress_anchors = True
         try:
             for intent in sorted_intents:
-                # Infer date for this specific intent to pass to executor
-                target_date = date.today().isoformat()
-                if intent.date_reference:
-                    ref = intent.date_reference.lower()
-                    if "tomorrow" in ref:
-                        target_date = (date.today() + timedelta(days=1)).isoformat()
-                    elif "today" in ref:
-                        target_date = date.today().isoformat()
-                    else:
-                        try: target_date = date.fromisoformat(ref).isoformat()
-                        except ValueError: pass
-                
+                target_date = self._resolve_target_date_from_intent(intent)
                 self._execute_intent(intent, target_date=target_date)
         finally:
             self._suppress_anchors = False
@@ -416,19 +459,32 @@ class LogicEngine:
         """Legacy-to-Logic bridge for commands from AIBackend."""
         try:
             # Handle both old and new field names for robustness
+            auto_sched = bool(cmd.get("auto_schedule"))
+            if auto_sched:
+                inferred_type = "floating_task"
+                start_ref = "now"
+            else:
+                inferred_type = cmd.get("intent_type") or (
+                    "fixed_event" if cmd.get("start_time") or cmd.get("start_time_reference") else "floating_task"
+                )
+                start_ref = cmd.get("start_time_reference", cmd.get("start_time"))
             intent = UserIntent(
                 action=cmd.get("action", "create"),
-                intent_type=cmd.get("intent_type") or ("fixed_event" if cmd.get("start_time") or cmd.get("start_time_reference") else "floating_task"),
+                intent_type=inferred_type,
                 event_name=str(cmd.get("event_name", cmd.get("label", cmd.get("activity", "Unknown Operation")))),
-                start_time_reference=cmd.get("start_time_reference", cmd.get("start_time")),
+                start_time_reference=start_ref,
                 end_time_reference=cmd.get("end_time_reference", cmd.get("end_time")),
                 duration_minutes=int(cmd.get("duration_minutes", cmd.get("duration", 0))) or None,
                 priority=int(cmd.get("priority", 5)),
-                deadline=cmd.get("deadline")
+                deadline=cmd.get("deadline"),
+                date_reference=cmd.get("date_reference"),
+                auto_schedule=auto_sched,
             )
+            target_date = self._resolve_target_date_from_intent(intent)
+            self._init_day(target_date)
             self._suppress_anchors = True
             try:
-                success = self._execute_intent(intent)
+                success = self._execute_intent(intent, target_date=target_date)
                 if success:
                     self._save_state()
                 return success
@@ -542,15 +598,16 @@ class LogicEngine:
         now = datetime.now()
         name = intent.event_name.lower()
         
-        # 1. DATE INFERENCE (Now handled batch-wise in process_parsed_input)
-        # Use target_date already inferred by batch processor if possible, 
-        # or fall back to today.
-        
+        # 1. DATE INFERENCE — batch (process_parsed_input) and AI bridge pass target_date;
+        #    otherwise resolve from intent.date_reference.
         if not target_date:
-             target_date = date.today().isoformat()
-             self._init_day(target_date) # Safety fallback
-        
-        # (Initialization is now handled batch-wise in process_parsed_input)
+            target_date = self._resolve_target_date_from_intent(intent)
+        self._init_day(target_date)
+
+        # Engine-placed tasks: never let the LLM pick the clock time; queue_flexible uses energy + gaps.
+        if intent.auto_schedule:
+            intent.intent_type = "floating_task"
+            intent.start_time_reference = "now"
 
         # 2. CONTROLLED DELETIONS/MODIFICATIONS (Context-Aware Base Time)
         base_time_for_delta = None
@@ -578,8 +635,8 @@ class LogicEngine:
             if found_original and intent.action == "delete":
                 return True
             
-        # 3. TIME PARSING (Relative-Aware)
-        if intent.start_time_reference:
+        # 3. TIME PARSING (Relative-Aware) — skip when auto_schedule (keep "now" as window keyword for queue_flexible)
+        if intent.start_time_reference and not intent.auto_schedule:
             s_ref = intent.start_time_reference.lower().strip()
             # If AI put a date keyword in the time field, move it
             if s_ref in ["today", "tomorrow"] and not intent.date_reference:
@@ -629,6 +686,7 @@ class LogicEngine:
                     if not found_duplicate:
                         if not base_time_for_delta: # Only set if not already set by modify block
                             base_time_for_delta = t.get('start_time')
+                        preserved_type = t.get('type', 'task')
                         log.info(f"Deduplication: Detected existing '{t['activity']}' on {d_str}. Overwriting.")
                         found_duplicate = True
                     continue # Exclude from new_tasks
@@ -637,13 +695,19 @@ class LogicEngine:
             if len(new_tasks) < len(tasks):
                 self.schedule_db[d_str] = new_tasks
             
-        # 3.5 HALLUCINATION GUARD
-        # EXCEPTION: Biological anchors (Sleep/Wake), explicit re-definitions, and 'modify' actions.
-        if (found_duplicate or found_original) and intent.action == "create" and intent.start_time_reference:
+        # 3.5 HALLUCINATION GUARD (create-overwrite fixed times only; floating/engine placement bypasses)
+        # EXCEPTION: Biological anchors, explicit range/duration, meals/bio/sleep slot types.
+        if (
+            (found_duplicate or found_original)
+            and intent.action == "create"
+            and intent.start_time_reference
+            and intent.intent_type == "fixed_event"
+        ):
             is_bio = any(b in name for b in ["sleep", "wake", "bedtime"])
             is_explicit = intent.end_time_reference is not None or intent.duration_minutes is not None
+            is_meal_or_anchor = preserved_type in ("meal", "biological", "sleep")
             
-            if not is_bio and not is_explicit:
+            if not is_bio and not is_explicit and not is_meal_or_anchor:
                 it_m = self._time_to_minutes(intent.start_time_reference)
                 bt_m = self._time_to_minutes(base_time_for_delta)
                 # Handle wrap-around (1440m)
@@ -692,6 +756,29 @@ class LogicEngine:
         meal_ks = ["lunch", "dinner", "breakfast", "meal", "snack"]
         if any(k in name for k in meal_ks):
             intent.priority = max(intent.priority, 8)
+
+        # LLM-supplied clock times can be in the past; never place fixed tasks earlier than now today.
+        if (
+            intent.intent_type == "fixed_event"
+            and intent.start_time_reference
+            and target_date == date.today().isoformat()
+            and not intent.auto_schedule
+        ):
+            now_m = now.hour * 60 + now.minute
+            slot_m = self._time_to_minutes(intent.start_time_reference)
+            if slot_m < now_m:
+                log.warning(
+                    f"Requested slot {intent.start_time_reference} is in the past for today; "
+                    f"using engine placement for '{intent.event_name}'."
+                )
+                return self.queue_flexible(
+                    target_date,
+                    intent.event_name,
+                    intent.duration_minutes or 60,
+                    intent.priority,
+                    "now",
+                    intent.deadline or "",
+                )
 
         if intent.intent_type == "fixed_event":
             # Proactive Alignment for P9+ Fixed Events (like exams/classes)
@@ -1342,7 +1429,8 @@ class LogicEngine:
                 sleep_ev["duration"] = max(30, w_m - s_m)
                 log.info(f"Sleep duration recalculated: {sleep_ev['duration']}m")
 
-            self._align_biological_anchors(target_date)
+            # Do not call _align_biological_anchors here — it would overwrite user-reported wake/sleep.
+            self._inject_sleep_debt_recovery_if_needed(target_date)
             # Recompute energy penalty based on new debt
             debt = self._calculate_sleep_debt(target_date)
             debt_penalty = int((debt / 60) * 5)

@@ -16,7 +16,8 @@ default: |
         "duration_minutes": <int or null>,
         "priority": <1-10>,
         "deadline": "<ISO date or null>",
-        "date_reference": "today|tomorrow|<ISO date>"
+        "date_reference": "today|tomorrow|yesterday|<ISO date>",
+        "auto_schedule": <true|false — engine picks next valid slot; see ENGINE RESCHEDULE>
       }
     ],
     "tasks": [
@@ -58,8 +59,21 @@ default: |
   - "I slept at 2am" / "went to bed at midnight" → sleep_wake_update: { sleep_time: "02:00" }
   - "I slept at 2am last night" → sleep_wake_update: { sleep_time: "02:00", date_reference: "yesterday" }
   - ANY mention of when the user slept or woke up → ALWAYS populate sleep_wake_update
+  - User corrections OVERRIDE scheduled anchors: reported sleep_time and wake_time are authoritative; do not treat them as optional hints
   - After updating sleep/wake → ask if the user wants the day re-planned
   - If wake_time is now, use the current SYSTEM TIME from context
+
+  CORRECTIONS TO EXISTING SCHEDULE (meals, classes, etc.):
+  - If the user states an ACTUAL time for something already on [CURRENT OPERATIONS SCHEDULE] (e.g. "I had lunch at 13:45" but Lunch shows 13:00), emit schedule_events with action: "modify", event_name matching that block (e.g. "Lunch"), start_time_reference the NEW time, duration_minutes unchanged unless they say otherwise, date_reference: "today" or "yesterday" or the ISO date when not today
+  - Use date_reference whenever the correction is not for the calendar day in SYSTEM DATE
+  - Large time shifts (e.g. lunch moved by hours) are valid user reports, not errors
+
+  ENGINE RESCHEDULE (mandatory when not using a user-specified clock time):
+  - If the user did not finish a task, or asks to reschedule / move / find time / "later today" for something already on [CURRENT OPERATIONS SCHEDULE], emit schedule_events with **"auto_schedule": true**, action "modify" (or "create" if new), event_name matching that block, duration_minutes and priority copied from context unless the user changes them
+  - **Do NOT** invent HH:MM for these cases — omit start_time_reference or set it to null. The Python engine uses SYSTEM TIME, energy score, schedule gaps, cognitive-load rules, and priority to place the block after the current time
+  - In response text you may say the task was queued for the engine to place; do not claim a specific time unless the user asked for one or you read it back from a follow-up after placement
+  - If the user names an exact future time ("put it at 7pm"), use auto_schedule false and start_time_reference with that time (must not be before SYSTEM TIME for today)
+  - Compare every proposed time to SYSTEM TIME in context; never schedule earlier than "now" for today unless date_reference is tomorrow or another future day
 
   SCHEDULE_EVENTS (fixed-time commitments):
   - Has a specific clock time: "class at 9am", "meeting at 2pm", "exam at 10"

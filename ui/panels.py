@@ -113,7 +113,7 @@ class LeftPanel(QWidget):
                 color: {C_TEXT};
                 border: none;
                 padding: 4px;
-                font-family: Montserrat, "Segoe UI";
+                font-family: {S_MONTSERRAT};
                 font-size: 11px;
             }}
         """)
@@ -296,7 +296,7 @@ class ChatPanel(QWidget):
                 border: 1px solid {C_BORDER};
                 border-radius: 6px;
                 padding: 8px;
-                font-family: Montserrat;
+                font-family: {S_MONTSERRAT};
                 font-size: 12px;
             }}
             QTextEdit:focus {{

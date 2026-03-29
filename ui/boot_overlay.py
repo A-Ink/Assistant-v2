@@ -315,6 +315,7 @@ class BootOverlay(QWidget):
                     background: {QColor(0, 180, 255, 20).name(QColor.NameFormat.HexArgb)};
                     border: 1px solid {C_BORDER if not is_rec else C_CYAN};
                     color: {C_TEXT if not is_rec else C_TEXT_BRIGHT};
+                    font-family: {S_MONTSERRAT};
                     text-align: left;
                 }}
                 QPushButton:hover {{
