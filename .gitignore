@@ -13,6 +13,11 @@ __pycache__/
 *.pyc
 .env
 
+# Build & Dist (PyInstaller artifacts should NOT be committed)
+dist/
+build/
+*.spec
+
 # Local Databases, Logs & User Data
 chroma_db/
 schedule_history.json

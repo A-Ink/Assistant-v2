@@ -9,9 +9,65 @@ import os
 import subprocess
 from pathlib import Path
 from huggingface_hub import snapshot_download, hf_hub_download
+from PyQt6.QtCore import QThread, pyqtSignal
 
-SCRIPT_DIR = Path(__file__).parent
+SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
+
+class ModelRequisitionWorker(QThread):
+    """
+    Background worker for AI core requisitioning.
+    Emits progress updates (0-100) and completion/error signals.
+    """
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, model_key, parent=None):
+        super().__init__(parent)
+        self.model_key = model_key
+
+    def run(self):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                config = json.load(f)
+
+            model_info = config["models"][self.model_key]
+            target_path = SCRIPT_DIR / model_info["path"]
+
+            self.status.emit(f"Initializing requisition of {model_info['display_name']}...")
+            
+            # Simple progress simulation or wrapping snapshot_download if possible
+            # Note: snapshot_download doesn't have a direct 'pct' callback for everything, 
+            # but we can track files or just emit 'In Progress'. 
+            # For now, we'll use a simple wrapper.
+            
+            requisition_model_core(model_info, str(target_path), self.progress.emit)
+
+            # Update config
+            config["active_model"] = self.model_key
+            with open(CONFIG_PATH, "w") as f:
+                json.dump(config, f, indent=2)
+
+            self.finished.emit(True, "Core successfully secured.")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+def requisition_model_core(model_info, target_path, progress_cb=None):
+    """Programmatic core of the download logic."""
+    hf_id = model_info["hf_model_id"]
+    engine = model_info.get("engine", "openvino")
+
+    if engine == "openvino":
+        # Note: snapshot_download is blocking. 
+        # For a better UI feel, we might want to use a custom loop, but standard hub download is safer.
+        if progress_cb: progress_cb(20)
+        snapshot_download(repo_id=hf_id, local_dir=target_path)
+        if progress_cb: progress_cb(100)
+    else:
+        # Placeholder for GGUF/llama.cpp
+        hf_hub_download(repo_id=hf_id, filename=model_info["hf_gguf_file"], local_dir=target_path)
+        if progress_cb: progress_cb(100)
 
 def print_header():
     print("=====================================================")

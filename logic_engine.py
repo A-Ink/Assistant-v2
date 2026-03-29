@@ -45,6 +45,7 @@ class LogicEngine:
         self.reminders_db: List[Dict[str, Any]] = []      # NEW: user reminders
         self.overflow_queue: List[Dict[str, Any]] = []
         self.user_energy: int = 100
+        self._suppress_anchors = False                    # NEW: avoid re-injection during shifts
         self._load_state()
 
     def _load_state(self):
@@ -160,6 +161,9 @@ class LogicEngine:
 
     def _init_day(self, target_date: str):
         """Ensures a date entry exists and runs daily biological checks."""
+        if self._suppress_anchors:
+            return
+            
         if hasattr(self, "_in_init_lock") and self._in_init_lock == target_date:
             return
         
@@ -360,20 +364,25 @@ class LogicEngine:
         for d in target_dates:
             self._init_day(d)
 
-        for intent in sorted_intents:
-            # Infer date for this specific intent to pass to executor
-            target_date = date.today().isoformat()
-            if intent.date_reference:
-                ref = intent.date_reference.lower()
-                if "tomorrow" in ref:
-                    target_date = (date.today() + timedelta(days=1)).isoformat()
-                elif "today" in ref:
-                    target_date = date.today().isoformat()
-                else:
-                    try: target_date = date.fromisoformat(ref).isoformat()
-                    except ValueError: pass
-            
-            self._execute_intent(intent, target_date=target_date)
+        self._suppress_anchors = True
+        try:
+            for intent in sorted_intents:
+                # Infer date for this specific intent to pass to executor
+                target_date = date.today().isoformat()
+                if intent.date_reference:
+                    ref = intent.date_reference.lower()
+                    if "tomorrow" in ref:
+                        target_date = (date.today() + timedelta(days=1)).isoformat()
+                    elif "today" in ref:
+                        target_date = date.today().isoformat()
+                    else:
+                        try: target_date = date.fromisoformat(ref).isoformat()
+                        except ValueError: pass
+                
+                self._execute_intent(intent, target_date=target_date)
+        finally:
+            self._suppress_anchors = False
+
         self._save_state()
 
     def _time_to_minutes(self, hhmm: Optional[str]) -> int:
@@ -417,10 +426,14 @@ class LogicEngine:
                 priority=int(cmd.get("priority", 5)),
                 deadline=cmd.get("deadline")
             )
-            success = self._execute_intent(intent)
-            if success:
-                self._save_state()
-            return success
+            self._suppress_anchors = True
+            try:
+                success = self._execute_intent(intent)
+                if success:
+                    self._save_state()
+                return success
+            finally:
+                self._suppress_anchors = False
         except Exception as e:
             log.error(f"Error in execute_schedule_command bridge: {e}")
             return False
@@ -541,8 +554,9 @@ class LogicEngine:
 
         # 2. CONTROLLED DELETIONS/MODIFICATIONS (Context-Aware Base Time)
         base_time_for_delta = None
+        preserved_type = "task"
         if intent.action in ["delete", "modify"]:
-            found = False
+            found_original = False
             search_dates = [target_date] if intent.date_reference else [date.today().isoformat(), (date.today() + timedelta(days=1)).isoformat()]
             
             for d_str in search_dates:
@@ -550,9 +564,10 @@ class LogicEngine:
                 new_tasks = []
                 for t in tasks:
                     if intent.event_name.lower() in t['activity'].lower() or t['activity'].lower() in intent.event_name.lower():
-                        if not found:
+                        if not found_original:
                             base_time_for_delta = t.get('start_time')
-                            found = True
+                            preserved_type = t.get('type', 'task')
+                            found_original = True
                         continue # Target found, effectively deleting it
                     new_tasks.append(t)
                 
@@ -560,7 +575,7 @@ class LogicEngine:
                     self.schedule_db[d_str] = new_tasks
                     log.info(f"Removed '{intent.event_name}' from {d_str} for processing.")
             
-            if found and intent.action == "delete":
+            if found_original and intent.action == "delete":
                 return True
             
         # 3. TIME PARSING (Relative-Aware)
@@ -583,8 +598,8 @@ class LogicEngine:
         # 3. IDEMPOTENT DEDUPLICATION & DELETION
         # If action is 'create', we check if a similar task already exists.
         # If so, we treat it as an OVERWRITE (modify) to prevent duplicates.
-        found = False
-        base_time_for_delta = None
+        # Note: We do NOT wipe base_time_for_delta here as it may be needed for relative shifts.
+        found_duplicate = False
         
         # Determine search range: Use explicit date if provided, otherwise check today/tomorrow
         if intent.date_reference:
@@ -611,20 +626,20 @@ class LogicEngine:
                     match = True
                 
                 if match:
-                    if not found:
-                        base_time_for_delta = t.get('start_time')
+                    if not found_duplicate:
+                        if not base_time_for_delta: # Only set if not already set by modify block
+                            base_time_for_delta = t.get('start_time')
                         log.info(f"Deduplication: Detected existing '{t['activity']}' on {d_str}. Overwriting.")
-                        found = True
+                        found_duplicate = True
                     continue # Exclude from new_tasks
                 new_tasks.append(t)
             
             if len(new_tasks) < len(tasks):
                 self.schedule_db[d_str] = new_tasks
             
-        # 3.5 HALLUCINATION GUARD: If AI sends action:create for a known task name, 
-        # but hallucinations a start time that differs by > 90m, we force-reconcile it.
+        # 3.5 HALLUCINATION GUARD
         # EXCEPTION: Biological anchors (Sleep/Wake), explicit re-definitions, and 'modify' actions.
-        if found and intent.action == "create" and intent.start_time_reference:
+        if (found_duplicate or found_original) and intent.action == "create" and intent.start_time_reference:
             is_bio = any(b in name for b in ["sleep", "wake", "bedtime"])
             is_explicit = intent.end_time_reference is not None or intent.duration_minutes is not None
             
@@ -639,7 +654,7 @@ class LogicEngine:
                     log.warning(f"Hallucination Guard: Overriding hallucinated shift ({intent.start_time_reference}) for {intent.event_name} to preserve existing {base_time_for_delta}.")
                     intent.start_time_reference = base_time_for_delta
         
-        if found and intent.action == "delete":
+        if (found_duplicate or found_original) and intent.action == "delete":
             return True
         
         # 4. TIME PARSING (Relative-Aware)
@@ -689,7 +704,7 @@ class LogicEngine:
                 intent.duration_minutes or 60,
                 intent.event_name,
                 intent.priority,
-                "task",
+                preserved_type,  # Use the type we found (e.g. 'meal')
                 intent.deadline or ""
             )
             

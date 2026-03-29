@@ -4,14 +4,17 @@ Full-screen sci-fi boot sequence with large fonts and fade-out animation.
 """
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                              QScrollArea, QFrame, QSizePolicy)
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+                              QScrollArea, QFrame, QSizePolicy, QPushButton, QProgressBar)
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QLinearGradient, QPainterPath
 from .theme import *
 
 
 class BootOverlay(QWidget):
     """Full-screen boot overlay — large centered layout, staggered log lines, fade-out."""
+    requisition_accepted = pyqtSignal()
+    requisition_cancelled = pyqtSignal()
+    core_selected = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,7 +42,7 @@ class BootOverlay(QWidget):
         c_lay.addWidget(title)
 
         # Subtitle
-        sub = QLabel("SYSTEMS BOOT  ·  v2.2")
+        sub = QLabel("SYSTEMS BOOT  ·  v3")
         sub.setFont(font_orbitron(10))
         sub.setStyleSheet(f"color: {C_TEXT_DIM}; letter-spacing: 4px; background: transparent;")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -88,6 +91,107 @@ class BootOverlay(QWidget):
             dr_lay.addWidget(d)
             self._dots.append(d)
         c_lay.addWidget(dots_row)
+        
+        # ── Requisition Panel (Hidden by default) ──
+        self._req_panel = QWidget()
+        self._req_panel.setVisible(False)
+        rp_lay = QVBoxLayout(self._req_panel)
+        rp_lay.setContentsMargins(0, 0, 0, 0)
+        rp_lay.setSpacing(15)
+        
+        self._req_msg = QLabel("AI CORE MISSING. INITIATE TACTICAL REQUISITION?")
+        self._req_msg.setFont(font_orbitron(12, QFont.Weight.Bold))
+        self._req_msg.setStyleSheet(f"color: {C_GOLD};")
+        self._req_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rp_lay.addWidget(self._req_msg)
+        
+        btn_row = QWidget()
+        br_lay = QHBoxLayout(btn_row)
+        br_lay.setSpacing(20)
+        
+        self._btn_init = QPushButton("INITIATE")
+        self._btn_init.setFont(font_orbitron(10, QFont.Weight.Bold))
+        self._btn_init.setFixedSize(140, 40)
+        self._btn_init.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_init.setStyleSheet(f"""
+            QPushButton {{
+                background: {QColor(0, 180, 255, 30).name(QColor.NameFormat.HexArgb)};
+                border: 1px solid {C_CYAN};
+                color: {C_CYAN};
+            }}
+            QPushButton:hover {{
+                background: {QColor(0, 180, 255, 60).name(QColor.NameFormat.HexArgb)};
+            }}
+        """)
+        self._btn_init.clicked.connect(self.requisition_accepted.emit)
+        
+        self._btn_cancel = QPushButton("CANCEL")
+        self._btn_cancel.setFont(font_orbitron(10, QFont.Weight.Bold))
+        self._btn_cancel.setFixedSize(140, 40)
+        self._btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 10);
+                border: 1px solid {C_BORDER};
+                color: {C_TEXT_DIM};
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 20);
+            }}
+        """)
+        self._btn_cancel.clicked.connect(self.requisition_cancelled.emit)
+        
+        br_lay.addWidget(self._btn_init)
+        br_lay.addWidget(self._btn_cancel)
+        rp_lay.addWidget(btn_row)
+        c_lay.addWidget(self._req_panel)
+        
+        # ── Progress Section (Hidden) ──
+        self._progress_section = QWidget()
+        self._progress_section.setVisible(False)
+        ps_lay = QVBoxLayout(self._progress_section)
+        ps_lay.setContentsMargins(0, 0, 0, 0)
+        
+        self._bar = QProgressBar()
+        self._bar.setFixedHeight(4)
+        self._bar.setTextVisible(False)
+        self._bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: {QColor(255, 255, 255, 10).name(QColor.NameFormat.HexArgb)};
+                border: none;
+            }}
+            QProgressBar::chunk {{
+                background: {C_CYAN};
+            }}
+        """)
+        ps_lay.addWidget(self._bar)
+        
+        self._progress_text = QLabel("Downloading Core...")
+        self._progress_text.setFont(font_mono(9))
+        self._progress_text.setStyleSheet(f"color: {C_CYAN_DIM};")
+        self._progress_text.setAlignment(Qt.AlignmentFlag.AlignRight)
+        ps_lay.addWidget(self._progress_text)
+        
+        c_lay.addWidget(self._progress_section)
+
+        # ── Selection Overlay (Hidden) ──
+        self._selection_overlay = QWidget()
+        self._selection_overlay.setVisible(False)
+        sel_lay = QVBoxLayout(self._selection_overlay)
+        sel_lay.setContentsMargins(0, 0, 0, 0)
+        sel_lay.setSpacing(10)
+        
+        sel_title = QLabel("TACTICAL CORE SELECTION")
+        sel_title.setFont(font_orbitron(14, QFont.Weight.Bold))
+        sel_title.setStyleSheet(f"color: {C_CYAN}; letter-spacing: 2px;")
+        sel_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sel_lay.addWidget(sel_title)
+        
+        self._core_list_layout = QVBoxLayout()
+        self._core_list_layout.setSpacing(8)
+        sel_lay.addLayout(self._core_list_layout)
+        
+        c_lay.addWidget(self._selection_overlay)
 
         root.addWidget(center)
         self.layout().setAlignment(center, Qt.AlignmentFlag.AlignHCenter)
@@ -167,6 +271,80 @@ class BootOverlay(QWidget):
                 col = C_TEXT_DIM
             d.setStyleSheet(f"color: {col}; background: transparent;")
         self._phase += 1
+
+    def show_requisition(self, core_name: str):
+        """Deprecated in favor of show_core_selection, but kept for fallback."""
+        self._req_msg.setText(f"AI CORE '{core_name}' MISSING. INITIATE TACTICAL REQUISITION?")
+        self._req_panel.setVisible(True)
+        # Hide dots while prompting
+        for d in self._dots: d.setVisible(False)
+
+    def show_core_selection(self, models_dict: dict, recommended_key: str = "qwen-2.5-7b"):
+        """Show a list of available AI cores to pick from."""
+        # Clear existing buttons
+        while self._core_list_layout.count():
+            item = self._core_list_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        for key, info in models_dict.items():
+            is_rec = (key == recommended_key)
+            name = info.get("display_name", key)
+            
+            btn = QPushButton()
+            btn.setFixedSize(600, 50)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            
+            btn_lay = QHBoxLayout(btn)
+            btn_lay.setContentsMargins(20, 0, 20, 0)
+            
+            name_lbl = QLabel(name.upper())
+            name_lbl.setFont(font_orbitron(10, QFont.Weight.Bold))
+            name_lbl.setStyleSheet("color: inherit; background: transparent;")
+            btn_lay.addWidget(name_lbl)
+            
+            if is_rec:
+                rec_lbl = QLabel("[ ALLIANCE RECOMMENDED ]")
+                rec_lbl.setFont(font_orbitron(8, QFont.Weight.Bold))
+                rec_lbl.setStyleSheet(f"color: {C_CYAN}; background: transparent;")
+                btn_lay.addStretch()
+                btn_lay.addWidget(rec_lbl)
+            
+            # Styling
+            style = f"""
+                QPushButton {{
+                    background: {QColor(0, 180, 255, 20).name(QColor.NameFormat.HexArgb)};
+                    border: 1px solid {C_BORDER if not is_rec else C_CYAN};
+                    color: {C_TEXT if not is_rec else C_TEXT_BRIGHT};
+                    text-align: left;
+                }}
+                QPushButton:hover {{
+                    background: {QColor(0, 180, 255, 50).name(QColor.NameFormat.HexArgb)};
+                    border-color: {C_CYAN};
+                }}
+            """
+            btn.setStyleSheet(style)
+            btn.clicked.connect(lambda checked, k=key: self.core_selected.emit(k))
+            self._core_list_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignCenter)
+
+        # Cancel button at the bottom
+        c_btn = QPushButton("PROCEED OFFLINE")
+        c_btn.setFixedSize(200, 30)
+        c_btn.setStyleSheet(f"color: {C_TEXT_DIM}; border: 1px solid {C_BORDER};")
+        c_btn.clicked.connect(self.requisition_cancelled.emit)
+        self._core_list_layout.addSpacing(10)
+        self._core_list_layout.addWidget(c_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self._selection_overlay.setVisible(True)
+        # Hide dots
+        for d in self._dots: d.setVisible(False)
+
+    def set_requisition_progress(self, val: int, status: str = ""):
+        """Show progress and update bar."""
+        self._req_panel.setVisible(False)
+        self._progress_section.setVisible(True)
+        self._bar.setValue(val)
+        if status:
+            self._progress_text.setText(status)
 
     def fade_out(self):
         self._spin_t.stop()

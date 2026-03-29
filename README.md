@@ -54,18 +54,18 @@ Powered by **ChromaDB**, the Terminal maintains a "Commander Dossier." It automa
 ## 📁 Codebase Map (File Functions)
 
 ### ◈ Root Backend
-*   [main.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/main.py): Entry point. Handles **Main Thread Initialization** (required for NPU stability) and orchestrates the backend boot sequence.
-*   [ai_backend.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/ai_backend.py): The interface for OpenVINO. Handles prompt templating, token streaming, and structured JSON parsing.
-*   [logic_engine.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/logic_engine.py): The "Brain." Contains the scheduling algorithms, energy calculations, and biological constraint enforcement.
-*   [memory_manager.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/memory_manager.py): Manages the local vector database (ChromaDB) for user fact storage and retrieval.
-*   [prompts.yaml](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/prompts.yaml): Centralized operational manifest defining the personality and extraction rules for the AI.
+*   [main.py](main.py): Entry point. Handles **Main Thread Initialization** (required for NPU stability) and orchestrates the backend boot sequence.
+*   [ai_backend.py](ai_backend.py): The interface for OpenVINO. Handles prompt templating, token streaming, and structured JSON parsing.
+*   [logic_engine.py](logic_engine.py): The "Brain." Contains the scheduling algorithms, energy calculations, and biological constraint enforcement.
+*   [memory_manager.py](memory_manager.py): Manages the local vector database (ChromaDB) for user fact storage and retrieval.
+*   [prompts.yaml](prompts.yaml): Centralized operational manifest defining the personality and extraction rules for the AI.
 
 ### ◈ UI Subsystem (PyQt6)
-*   [ui/window.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/ui/window.py): Main resizable, frameless window container. Manages global states (Online/Processing) and hit-tests.
-*   [ui/panels.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/ui/panels.py): Defines the three-column layout (Left: Dossier/Tasks; Center: Comms; Right: Status/Ops).
-*   [ui/widgets.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/ui/widgets.py): Custom-painted components (Energy bars, Sparklines, Sci-fi panels) using QPainter for high performance.
-*   [ui/theme.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/ui/theme.py): Global design system (colors, fonts, and QSS stylesheets).
-*   [ui/workers.py](file:///c:/Users/ashok/Documents/Github%20Projects/Assistant%20v2/ui/workers.py): Thread management for AI generation, RAM diagnostics, and reminder alerts.
+*   [ui/window.py](ui/window.py): Main resizable, frameless window container. Manages global states (Online/Processing) and hit-tests.
+*   [ui/panels.py](ui/panels.py): Defines the three-column layout (Left: Dossier/Tasks; Center: Comms; Right: Status/Ops).
+*   [ui/widgets.py](ui/widgets.py): Custom-painted components (Energy bars, Sparklines, Sci-fi panels) using QPainter for high performance.
+*   [ui/theme.py](ui/theme.py): Global design system (colors, fonts, and QSS stylesheets).
+*   [ui/workers.py](ui/workers.py): Thread management for AI generation, RAM diagnostics, and reminder alerts.
 
 ---
 

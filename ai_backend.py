@@ -8,6 +8,7 @@ import os
 import threading
 import logging
 import re
+import ctypes
 from pathlib import Path
 import yaml
 import openvino_genai as ov_genai
@@ -139,6 +140,18 @@ class AIBackend:
         # Initialization is handled explicitly by main.py boot sequence
         # threading.Thread(target=self.initialize, daemon=True).start()
 
+    def _get_win32_short_path(self, path: str) -> str:
+        """
+        Resolve a Windows path to its 8.3 short name (e.g. GITHU~1).
+        This eliminates spaces and character limits for finicky drivers.
+        """
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(path, buf, 1024)
+            return buf.value or path  # Fallback to original if shortening fails
+        except Exception:
+            return path
+
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH, "r") as f:
@@ -154,6 +167,22 @@ class AIBackend:
                 log.error(f"Failed to load prompts.yaml: {e}")
         return {}
 
+    @property
+    def available_models(self):
+        """Return all model definitions from config."""
+        return self.config.get("models", {})
+
+    def is_core_available(self):
+        """Check if the active model core exists on disk."""
+        if not self.model_info: return False
+        path = Path(self.model_info["path"]).resolve()
+        if not path.is_absolute():
+            # Fallback to Script Dir
+            from download_model import SCRIPT_DIR
+            path = SCRIPT_DIR / self.model_info["path"]
+            
+        return path.exists() and any(path.iterdir())
+
     def initialize(self):
         log.info(f"====== INITIATING AI CORE BOOT ======")
         log.info(f"Core: {self.display_name}")
@@ -162,9 +191,15 @@ class AIBackend:
         if self.engine_type == "openvino":
             try:
                 
-                # Use absolute path for caching to ensure it hits the model_cache folder
-                abs_cache_path = str(SCRIPT_DIR / self.cache_dir)
-                log.info(f"Setting cache directory to: {abs_cache_path}")
+                # Use a space-free system path for the NPU cache to avoid driver-level crashes.
+                # Project path: C:\Users\ashok\Documents\Github Projects\... (HAS SPACES)
+                # Cache path: %LOCALAPPDATA%\AllianceTerminalV3\cache (SAFE)
+                local_app_data = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+                abs_cache_path = os.path.join(local_app_data, "AllianceTerminalV3", "cache")
+                log.info(f"Targeting tactical cache at: {abs_cache_path}")
+                
+                if not os.path.exists(abs_cache_path):
+                    os.makedirs(abs_cache_path, exist_ok=True)
                 
                 # Force environment variable and explicit all-caps CACHE_DIR key
                 os.environ["OV_GENAI_CACHE_DIR"] = abs_cache_path
@@ -174,19 +209,59 @@ class AIBackend:
                 
                 if self.target_device == "NPU":
                     # Map context_size to MAX_PROMPT_LEN for NPU
-                    ctx_size = self.model_info.get("context_size", 1024)
+                    # We maintain the user's requested large context but set safe defaults if missing
+                    ctx_size = self.model_info.get("context_size", 2048)
                     max_tokens = self.model_info.get("max_tokens", 1024)
                     
                     ov_config["MAX_PROMPT_LEN"] = int(ctx_size)
                     ov_config["PER_DEVICE_MAX_TOKENS"] = int(max_tokens)
-                    log.info(f"NPU optimized: MAX_PROMPT_LEN={ctx_size}, MAX_TOKENS={max_tokens}")
+                    log.info(f"NPU optimized: {ov_config}")
+                # Resolve absolute path and then shorten it for NPU stability (8.3 notation)
+                self.pip_path = os.path.abspath(self.model_path)
+                short_pip_path = self._get_win32_short_path(self.pip_path)
                 
-                self.pipe = ov_genai.LLMPipeline(self.model_path, self.target_device, **ov_config)
+                log.info(f"Targeting logic core: {short_pip_path}")
+                if short_pip_path != self.pip_path:
+                    log.info("  [INFO] Windows 8.3 Path Aliasing active (Safe Pathing).")
+                
+                # Check for critical files in the model path (using short path for checks too)
+                required_files = ["openvino_model.xml", "openvino_model.bin", "config.json"]
+                for f in required_files:
+                    fpath = os.path.join(short_pip_path, f)
+                    if os.path.exists(fpath):
+                        log.info(f"  [FOUND] {f}")
+                    else:
+                        log.error(f"  [MISSING] {f} - Critical for NPU boot!")
+                
+                log.info(f"Invoking ov_genai.LLMPipeline constructor on {self.target_device}...")
+                log.info("  [NOTE] If this is the first run after a folder rename, re-compilation may take 30-60s.")
+
+                # --- ⚡ NPU BOOTSTRAP WITH SAFE-MODE RETRY ⚡ ---
+                try:
+                    self.pipe = ov_genai.LLMPipeline(short_pip_path, self.target_device, **ov_config)
+                except Exception as e:
+                    log.warning(f"[WARN] Primary NPU allocation failed: {e}")
+                    log.warning("[RETRY] Attempting 'NPU Safe-Mode' (Reduced Context)...")
+                    
+                    # Drastically reduce context for emergency boot
+                    safe_config = {
+                        "CACHE_DIR": abs_cache_path,
+                        "MAX_PROMPT_LEN": 1024,
+                        "PER_DEVICE_MAX_TOKENS": 512
+                    }
+                    try:
+                        self.pipe = ov_genai.LLMPipeline(short_pip_path, self.target_device, **safe_config)
+                        log.info("[SUCCESS] NPU Safe-Mode active. Note: Context history is limited.")
+                    except Exception as e2:
+                        log.error(f"[FATAL] NPU hardware refused all tactical configurations: {e2}")
+                        raise e2
                 
                 self.is_loaded = True
                 log.info(f"[SUCCESS] OpenVINO hardware graph mapped to {self.target_device}")
             except Exception as e:
                 log.error(f"[FATAL] OpenVINO failed on {self.target_device}: {e}")
+                import traceback
+                log.error(traceback.format_exc())
 
         elif self.engine_type == "llama.cpp":
             try:
